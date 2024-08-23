@@ -1,0 +1,21 @@
+[package]
+name = "ghost"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rocket = { version = "0.5.1", features = ["json", "msgpack"] }
+phantom-zone = { git = "https://github.com/ChihChengLiang/phantom-zone", rev = "7645ad5b8a329429f44feb2485b0715aad86dab1", features = [
+    "non_interactive_mp",
+] }
+anyhow = { version = "1.0.86" }
+thiserror = { version = "1.0.63" }
+serde = { version = "1.0.208" }
+serde_json = { version = "1.0.125" }
+reqwest = { version = "0.12.5", features = ["json", "stream"] }
+tokio = { version = "1.39.3", features = ["full"] }
+rand = { version = "0.8.5" }
+itertools = { version = "0.13.0" }
+rayon = { version = "1.10.0" }
+tokio-util = { version = "0.7.11" }
+indicatif = { version = "0.17.8" }
