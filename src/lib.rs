@@ -1,3 +1,8 @@
+mod client;
 mod server;
 mod types;
-mod client;
+
+pub use client::Wallet;
+
+#[cfg(test)]
+mod tests;

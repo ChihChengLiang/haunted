@@ -14,23 +14,26 @@ use reqwest::{self, header::CONTENT_TYPE, Client};
 use rocket::serde::msgpack;
 use serde::{Deserialize, Serialize};
 use std::{
+    future::Future,
     pin::Pin,
     task::{Context, Poll},
 };
 use tokio::io::AsyncRead;
 use tokio_util::io::ReaderStream;
 
-pub struct Wallet {
-    rc: RequestClient,
+pub struct Wallet<RQ: Request> {
+    pub(crate) rc: RQ,
 }
 
-impl Wallet {
-    fn new(url: &str) -> Self {
+impl Wallet<ProductionClient> {
+    pub fn new(url: &str) -> Self {
         Self {
-            rc: RequestClient::new(url),
+            rc: ProductionClient::new(url),
         }
     }
+}
 
+impl<RQ: Request> Wallet<RQ> {
     async fn get_seed(&self) -> Result<Seed, Error> {
         self.rc.get("/param").await
     }
@@ -47,7 +50,7 @@ impl Wallet {
         self.rc.post_msgpack("/submit", &submission).await
     }
     /// Complete the flow to derive server key shares
-    /// 
+    ///
     /// Wait actions from other users
     pub async fn run_setup(&self) -> Result<(), Error> {
         let seed = self.get_seed().await?;
@@ -70,138 +73,111 @@ impl Wallet {
         // Submit decryption share if requested
         // Decrypt decryptables whenever possible
     }
-
 }
 
-enum RequestClient {
-    Prod {
-        url: String,
-        client: reqwest::Client,
-    },
-    Test(Box<rocket::local::asynchronous::Client>),
+pub trait Request {
+    fn get<T: Send + for<'de> Deserialize<'de> + 'static>(
+        &self,
+        path: &str,
+    ) -> impl Future<Output = Result<T, Error>>;
+    fn post_nobody<T: Send + for<'de> Deserialize<'de> + 'static>(
+        &self,
+        path: &str,
+    ) -> impl Future<Output = Result<T, Error>>;
+
+    fn post<T: Send + for<'de> Deserialize<'de> + 'static>(
+        &self,
+        path: &str,
+        body: Vec<u8>,
+    ) -> impl Future<Output = Result<T, Error>>;
+
+    fn post_msgpack<T: Send + for<'de> Deserialize<'de> + 'static>(
+        &self,
+        path: &str,
+        body: &impl Serialize,
+    ) -> impl Future<Output = Result<T, Error>>;
 }
 
-impl RequestClient {
-    pub fn new(url: &str) -> Self {
-        Self::Prod {
+struct ProductionClient {
+    url: String,
+    client: reqwest::Client,
+}
+
+impl ProductionClient {
+    fn new(url: &str) -> Self {
+        Self {
             url: url.to_string(),
             client: Client::new(),
         }
     }
 
-    pub fn url(&self) -> String {
-        match self {
-            Self::Prod { url, .. } => url.to_string(),
-            Self::Test(_) => panic!("No url for testing"),
-        }
-    }
-
     fn path(&self, path: &str) -> String {
-        match self {
-            Self::Prod { url, .. } => format!("{}/{}", url, path),
-            Self::Test(_) => unreachable!(),
+        format!("{}/{}", self.url, path)
+    }
+
+    async fn handle_response<T: Send + for<'de> Deserialize<'de> + 'static>(
+        response: reqwest::Response,
+    ) -> Result<T, Error> {
+        match response.status().as_u16() {
+            200 => Ok(response.json::<T>().await?),
+            _ => {
+                let err = response.text().await?;
+                bail!("Server responded error: {:?}", err)
+            }
+        }
+    }
+}
+
+impl Request for ProductionClient {
+    fn get<T: Send + for<'de> Deserialize<'de> + 'static>(
+        &self,
+        path: &str,
+    ) -> impl Future<Output = Result<T, Error>> {
+        async {
+            let response = self.client.get(self.path(path)).send().await?;
+            Self::handle_response(response).await
         }
     }
 
-    async fn get<T: Send + for<'de> Deserialize<'de> + 'static>(
+    fn post_nobody<T: Send + for<'de> Deserialize<'de> + 'static>(
         &self,
         path: &str,
-    ) -> Result<T, Error> {
-        match self {
-            Self::Prod { client, .. } => {
-                let response = client.get(self.path(path)).send().await?;
-                handle_response_prod(response).await
-            }
-            Self::Test(client) => {
-                let response = client.get(path).dispatch().await;
-                handle_response_test(response).await
-            }
+    ) -> impl Future<Output = Result<T, Error>> {
+        async {
+            let response = self.client.post(self.path(path)).send().await?;
+            Self::handle_response(response).await
         }
     }
-    async fn post_nobody<T: Send + for<'de> Deserialize<'de> + 'static>(
-        &self,
-        path: &str,
-    ) -> Result<T, Error> {
-        match self {
-            Self::Prod { client, .. } => {
-                let response = client.post(self.path(path)).send().await?;
-                handle_response_prod(response).await
-            }
-            Self::Test(client) => {
-                let response = client.post(path).dispatch().await;
-                handle_response_test(response).await
-            }
-        }
-    }
-    async fn post<T: Send + for<'de> Deserialize<'de> + 'static>(
+
+    fn post<T: Send + for<'de> Deserialize<'de> + 'static>(
         &self,
         path: &str,
         body: Vec<u8>,
-    ) -> Result<T, Error> {
-        match self {
-            Self::Prod { client, .. } => {
-                let response = client.post(self.path(path)).body(body).send().await?;
-                handle_response_prod(response).await
-            }
-            Self::Test(client) => {
-                let response = client.post(path).body(body).dispatch().await;
-                handle_response_test(response).await
-            }
+    ) -> impl Future<Output = Result<T, Error>> {
+        async {
+            let response = self.client.post(self.path(path)).body(body).send().await?;
+            Self::handle_response(response).await
         }
     }
-    async fn post_msgpack<T: Send + for<'de> Deserialize<'de> + 'static>(
+
+    fn post_msgpack<T: Send + for<'de> Deserialize<'de> + 'static>(
         &self,
         path: &str,
         body: &impl Serialize,
-    ) -> Result<T, Error> {
-        match self {
-            Self::Prod { client, .. } => {
-                let body = msgpack::to_compact_vec(body)?;
-                let reader = ProgressReader::new(&body, 128 * 1024);
-                let stream = ReaderStream::new(reader);
+    ) -> impl Future<Output = Result<T, Error>> {
+        async {
+            let body = msgpack::to_compact_vec(body)?;
+            let reader = ProgressReader::new(&body, 128 * 1024);
+            let stream = ReaderStream::new(reader);
 
-                let response = client
-                    .post(self.path(path))
-                    .header(CONTENT_TYPE, "application/msgpack")
-                    .body(reqwest::Body::wrap_stream(stream))
-                    .send()
-                    .await?;
-                handle_response_prod(response).await
-            }
-            Self::Test(client) => {
-                let response = client.post(path).msgpack(body).dispatch().await;
-                handle_response_test(response).await
-            }
-        }
-    }
-}
-
-async fn handle_response_prod<T: Send + for<'de> Deserialize<'de> + 'static>(
-    response: reqwest::Response,
-) -> Result<T, Error> {
-    match response.status().as_u16() {
-        200 => Ok(response.json::<T>().await?),
-        _ => {
-            let err = response.text().await?;
-            bail!("Server responded error: {:?}", err)
-        }
-    }
-}
-
-async fn handle_response_test<T: Send + for<'de> Deserialize<'de> + 'static>(
-    response: rocket::local::asynchronous::LocalResponse<'_>,
-) -> Result<T, Error> {
-    match response.status().code {
-        200 => response
-            .into_json::<T>()
-            .await
-            .ok_or(anyhow!("Can't parse response output")),
-        _ => {
-            let err = response
-                .into_string()
-                .await
-                .ok_or(anyhow!("Can't parse response output"))?;
-            bail!("Server responded error: {:?}", err)
+            let response = self
+                .client
+                .post(self.path(path))
+                .header(CONTENT_TYPE, "application/msgpack")
+                .body(reqwest::Body::wrap_stream(stream))
+                .send()
+                .await?;
+            Self::handle_response(response).await
         }
     }
 }
