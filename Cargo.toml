@@ -1,5 +1,5 @@
 [package]
-name = "ghost"
+name = "haunted"
 version = "0.1.0"
 edition = "2021"
 
@@ -10,8 +10,8 @@ phantom-zone = { git = "https://github.com/ChihChengLiang/phantom-zone", rev = "
 ] }
 anyhow = { version = "1.0.86" }
 thiserror = { version = "1.0.63" }
-serde = { version = "1.0.208" }
-serde_json = { version = "1.0.125" }
+serde = { version = "1.0.209" }
+serde_json = { version = "1.0.127" }
 reqwest = { version = "0.12.5", features = ["json", "stream"] }
 tokio = { version = "1.39.3", features = ["full"] }
 rand = { version = "0.8.5" }
