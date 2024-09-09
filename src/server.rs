@@ -33,6 +33,8 @@ async fn register(ss: &State<MutexServerStorage>) -> Result<Json<usize>, ErrorRe
     Ok(Json(user))
 }
 
+async fn setup_status() ->(){}
+
 /// The user submits Server key shares
 #[post("/submit_sks", data = "<submission>", format = "msgpack")]
 async fn submit_sks(

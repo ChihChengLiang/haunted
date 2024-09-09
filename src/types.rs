@@ -216,28 +216,39 @@ pub(crate) struct DecryptionShareSubmission {
 
 pub type DecryptableID = usize;
 
+#[derive(Debug, Serialize, Deserialize)]
 enum Visibility {
     Public,
     Designated(UserId),
 }
 
-struct Decryptable {
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct Decryptable {
+    pub(crate) id: usize,
     vis: Visibility,
-    word: Word,
+    pub(crate) word: Word,
     shares: HashMap<UserId, DecryptionShare>,
     n_users: usize,
     /// Do we have all decryption shares required?
-    is_complete: bool,
+    pub(crate) is_complete: bool,
 }
 
 impl Decryptable {
-    fn new(n_users: usize, word: Word, vis: Visibility) -> Self {
+    fn new(id: usize, n_users: usize, word: Word, vis: Visibility) -> Self {
         Self {
+            id,
             vis,
             word,
             shares: HashMap::default(),
             n_users,
             is_complete: false,
+        }
+    }
+
+    pub(crate) fn should_contribute(&self, user_id: UserId) -> bool {
+        match self.vis {
+            Visibility::Public => true,
+            Visibility::Designated(id) => id != user_id,
         }
     }
 

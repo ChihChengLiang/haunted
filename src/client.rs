@@ -1,14 +1,16 @@
 use crate::{
     server::PARAMETER,
     types::{
-        DecryptionShare, DecryptionShareSubmission, Seed, ServerKeyShare, ServerState,
-        SksSubmission, UserId,
+        AnnotatedDecryptionShare, ClientKey, Decryptable, DecryptionShare,
+        DecryptionShareSubmission, Seed, ServerKeyShare, ServerState, SksSubmission, UserId,
     },
 };
 use anyhow::{anyhow, bail, Error};
 use indicatif::{ProgressBar, ProgressStyle};
+use itertools::Itertools;
 use phantom_zone::{
-    gen_client_key, gen_server_key_share, set_common_reference_seed, set_parameter_set,
+    gen_client_key, gen_server_key_share, set_common_reference_seed, set_parameter_set, Decryptor,
+    MultiPartyDecryptor,
 };
 use reqwest::{self, header::CONTENT_TYPE, Client};
 use rocket::serde::msgpack;
@@ -52,7 +54,7 @@ impl<RQ: Request> Wallet<RQ> {
     /// Complete the flow to derive server key shares
     ///
     /// Wait actions from other users
-    pub async fn run_setup(&self) -> Result<(), Error> {
+    pub async fn run_setup(&self) -> Result<SetupWallet<RQ>, Error> {
         let seed = self.get_seed().await?;
         set_parameter_set(PARAMETER);
         set_common_reference_seed(seed);
@@ -61,21 +63,80 @@ impl<RQ: Request> Wallet<RQ> {
         let user_id = self.register().await?;
         // Wait registration to conclude
         let total_users = 0;
-        let sks = gen_server_key_share(user_id, total_users, &client_key);
-        self.submit_sks(user_id, &sks).await?;
+        let server_key_share = gen_server_key_share(user_id, total_users, &client_key);
+        self.submit_sks(user_id, &server_key_share).await?;
 
-        Ok(())
-    }
-
-    /// Run this in background
-    pub fn serve_decryption_keys(&self) {
-        // Listen to published decryptables
-        // Submit decryption share if requested
-        // Decrypt decryptables whenever possible
+        Ok(SetupWallet {
+            rc: self.rc.clone(),
+            user_id,
+            client_key,
+            server_key_share,
+        })
     }
 }
 
-pub trait Request {
+pub struct SetupWallet<RQ: Request> {
+    rc: RQ,
+    user_id: UserId,
+    client_key: ClientKey,
+    server_key_share: ServerKeyShare,
+}
+
+impl<RQ: Request> SetupWallet<RQ> {
+    async fn listen_for_decryptables(&self) -> Result<Vec<Decryptable>, Error> {
+        // Poll the server for new decryptables
+        let decryptables: Vec<Decryptable> = self.rc.get("/decryptables").await?;
+        Ok(decryptables)
+    }
+
+    fn generate_decryption_share(&self, decryptable: &Decryptable) -> AnnotatedDecryptionShare {
+        // Generate decryption share for the given decryptable
+        let decryption_share = decryptable
+            .word
+            .iter()
+            .map(|fhe_bit| self.client_key.gen_decryption_share(fhe_bit))
+            .collect_vec();
+
+        // Create an AnnotatedDecryptionShare with the decryptable's ID and the generated share
+        (decryptable.id, decryption_share)
+    }
+
+    async fn submit_decryption_share(&self, share: AnnotatedDecryptionShare) -> Result<(), Error> {
+        let submission = DecryptionShareSubmission {
+            user_id: self.user_id,
+            decryption_shares: vec![share],
+        };
+        self.rc
+            .post_msgpack("/submit_decryption_share", &submission)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn serve_decryption_keys(&self) -> Result<(), Error> {
+        loop {
+            // Listen to published decryptables
+            let decryptables = self.listen_for_decryptables().await?;
+
+            for decryptable in decryptables {
+                // Submit decryption share if requested
+                if decryptable.should_contribute(self.user_id) {
+                    let share = self.generate_decryption_share(&decryptable);
+                    self.submit_decryption_share(share).await?;
+                }
+
+                // Decrypt decryptables whenever possible
+                if decryptable.is_complete {
+                    let plaintext = self.decrypt_decryptable(&decryptable)?;
+                    self.handle_decrypted_data(plaintext).await?;
+                }
+            }
+
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        }
+    }
+}
+
+pub trait Request: Clone {
     fn get<T: Send + for<'de> Deserialize<'de> + 'static>(
         &self,
         path: &str,
@@ -98,6 +159,7 @@ pub trait Request {
     ) -> impl Future<Output = Result<T, Error>>;
 }
 
+#[derive(Debug, Clone)]
 struct ProductionClient {
     url: String,
     client: reqwest::Client,
