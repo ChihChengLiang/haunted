@@ -35,7 +35,7 @@ impl Wallet<ProductionClient> {
     }
 }
 
-impl<RQ: Request> Wallet<RQ> {
+impl<RQ: Request + Clone> Wallet<RQ> {
     async fn get_seed(&self) -> Result<Seed, Error> {
         self.rc.get("/param").await
     }
@@ -140,7 +140,7 @@ impl<RQ: Request> SetupWallet<RQ> {
     }
 }
 
-pub trait Request: Clone {
+pub trait Request {
     fn get<T: Send + for<'de> Deserialize<'de> + 'static>(
         &self,
         path: &str,
@@ -163,7 +163,7 @@ pub trait Request: Clone {
     ) -> impl Future<Output = Result<T, Error>>;
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct ProductionClient {
     url: String,
     client: reqwest::Client,

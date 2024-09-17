@@ -15,6 +15,7 @@ impl Wallet<TestClient> {
     }
 }
 
+#[derive(Debug)]
 struct TestClient(Client);
 
 async fn handle_response<T: Send + for<'de> Deserialize<'de> + 'static>(
