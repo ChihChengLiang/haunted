@@ -1,10 +1,14 @@
-use crate::client::{Request, Wallet};
+use std::time::Duration;
+
+use crate::client::{ProductionClient, Request, Wallet};
+use crate::server::rocket;
 use anyhow::{anyhow, bail, Error};
 use rocket::{
     local::asynchronous::{Client, LocalResponse},
     Build, Rocket,
 };
 use serde::Deserialize;
+use tokio::time::sleep;
 
 impl Wallet<TestClient> {
     async fn new_test(rocket: Rocket<Build>) -> Result<Self, Error> {
@@ -78,4 +82,29 @@ impl Request for TestClient {
             handle_response(response).await
         }
     }
+}
+
+use std::sync::Once;
+use tokio;
+
+static INIT: Once = Once::new();
+
+async fn setup_server() {
+    INIT.call_once(|| {
+        tokio::spawn(async {
+            rocket().launch().await.expect("server failed to start");
+        });
+    });
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+}
+
+#[rocket::async_test]
+async fn test_fullflow() {
+    setup_server().await;
+    let url = "http://localhost:5566";
+    let user = Wallet::<ProductionClient>::new(url);
+    let user2 = Wallet::<ProductionClient>::new(url);
+    user.run_setup().await.unwrap();
+    user2.run_setup().await.unwrap();
+   
 }

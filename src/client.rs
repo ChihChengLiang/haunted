@@ -163,8 +163,8 @@ pub trait Request {
     ) -> impl Future<Output = Result<T, Error>>;
 }
 
-#[derive(Debug)]
-struct ProductionClient {
+#[derive(Debug, Clone)]
+pub struct ProductionClient {
     url: String,
     client: reqwest::Client,
 }

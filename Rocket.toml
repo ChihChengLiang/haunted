@@ -1,0 +1,4 @@
+[default]
+address = "0.0.0.0"
+port = 5566
+limits = { msgpack = "700 MB" }
