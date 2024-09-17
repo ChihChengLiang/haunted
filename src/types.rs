@@ -274,7 +274,7 @@ impl DecryptableManager {
     }
     fn add_decryptable(&mut self, word: Word, vis: Visibility) -> DecryptableID {
         let id = self.decryptables.len();
-        let d = Decryptable::new(self.n_users, word, vis);
+        let d = Decryptable::new(id, self.n_users, word, vis);
         self.decryptables.push(d);
         id
     }

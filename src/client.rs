@@ -112,6 +112,10 @@ impl<RQ: Request> SetupWallet<RQ> {
         Ok(())
     }
 
+    async fn handle_decrypted_data(&self) {
+        todo!()
+    }
+
     pub async fn serve_decryption_keys(&self) -> Result<(), Error> {
         loop {
             // Listen to published decryptables
@@ -126,8 +130,8 @@ impl<RQ: Request> SetupWallet<RQ> {
 
                 // Decrypt decryptables whenever possible
                 if decryptable.is_complete {
-                    let plaintext = self.decrypt_decryptable(&decryptable)?;
-                    self.handle_decrypted_data(plaintext).await?;
+                    // let plaintext = self.decrypt_decryptable(&decryptable)?;
+                    // self.handle_decrypted_data(plaintext).await?;
                 }
             }
 
