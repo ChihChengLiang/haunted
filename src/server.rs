@@ -12,7 +12,7 @@ use rocket::{Build, Rocket, State};
 use tokio::sync::Mutex;
 
 #[get("/param")]
-async fn get_param(ss: &State<MutexServerStorage>) -> Json<ParamCRS> {
+pub(crate) async fn get_param(ss: &State<MutexServerStorage>) -> Json<ParamCRS> {
     let ss = ss.lock().await;
     Json(ss.get_param_crs())
 }

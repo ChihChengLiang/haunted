@@ -3,6 +3,7 @@ use crate::{
         deserialize_cts, deserialize_pk, serialize_bs_key_share, serialize_decryption_share,
         serialize_pk_share, Client as PhantomClient,
     },
+    server::rocket_uri_macro_get_param,
     types::{
         AnnotatedDecryptionShare, Decryptable, DecryptionShare, DecryptionShareSubmission,
         ParamCRS, ServerState, SksSubmission, UserId,
@@ -16,7 +17,7 @@ use phantom_zone_evaluator::boolean::fhew::prelude::{
 };
 use rand::rngs::StdRng;
 use reqwest::{self, header::CONTENT_TYPE, Client};
-use rocket::serde::msgpack;
+use rocket::{serde::msgpack, uri};
 use serde::{Deserialize, Serialize};
 use std::{
     future::Future,
@@ -40,7 +41,7 @@ impl Wallet<ProductionClient> {
 
 impl<RQ: Request + Clone> Wallet<RQ> {
     async fn get_param_crs(&self) -> Result<ParamCRS, Error> {
-        self.rc.get("/param").await
+        self.rc.get(&uri!(get_param).to_string()).await
     }
 
     async fn register(&self) -> Result<UserId, Error> {
