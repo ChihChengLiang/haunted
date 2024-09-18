@@ -1,10 +1,5 @@
 use itertools::Itertools;
-use phantom_zone::{
-    evaluator::NonInteractiveMultiPartyCrs,
-    keys::CommonReferenceSeededNonInteractiveMultiPartyServerKeyShare, parameters::BoolParameters,
-    Encryptor, FheBool, KeySwitchWithId, MultiPartyDecryptor, NonInteractiveSeededFheBools,
-    SampleExtractor,
-};
+use phantom_zone_evaluator::boolean::fhew::{param::I_4P, prelude::*};
 use rocket::serde::{Deserialize, Serialize};
 use rocket::tokio::sync::Mutex;
 use rocket::Responder;
@@ -14,24 +9,13 @@ use std::fmt::Display;
 use std::sync::Arc;
 use thiserror::Error;
 
-pub type ClientKey = phantom_zone::ClientKey;
 pub type UserId = usize;
-
-pub(crate) type Seed = [u8; 32];
-pub(crate) type ServerKeyShare = CommonReferenceSeededNonInteractiveMultiPartyServerKeyShare<
-    Vec<Vec<u64>>,
-    BoolParameters<u64>,
-    NonInteractiveMultiPartyCrs<Seed>,
->;
-pub type Word = Vec<FheBool>;
 pub(crate) type CircuitInput = Vec<Word>;
 /// Decryption share for a word from one user.
 pub type DecryptionShare = Vec<u64>;
 
 /// Decryption share with output id
 pub type AnnotatedDecryptionShare = (usize, DecryptionShare);
-
-pub(crate) type EncryptedWord = NonInteractiveSeededFheBools<Vec<u64>, Seed>;
 
 #[derive(Debug, Error)]
 pub(crate) enum Error {
