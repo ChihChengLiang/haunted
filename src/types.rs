@@ -10,10 +10,9 @@ use std::sync::Arc;
 use thiserror::Error;
 
 pub type UserId = usize;
-pub(crate) type CircuitInput = Vec<Word>;
 /// Decryption share for a word from one user.
-pub type DecryptionShare = Vec<u64>;
-
+pub type DecryptionShare = Vec<u8>;
+pub type Word = Vec<u8>;
 /// Decryption share with output id
 pub type AnnotatedDecryptionShare = (usize, DecryptionShare);
 

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
 #[serde(bound(serialize = "", deserialize = ""))]
-struct Client<R: RingOps, M: ModulusOps> {
+pub(crate) struct Client<R: RingOps, M: ModulusOps> {
     param: FhewBoolMpiParam,
     crs: FhewBoolMpiCrs<StdRng>,
     share_idx: usize,
@@ -20,7 +20,11 @@ struct Client<R: RingOps, M: ModulusOps> {
 }
 
 impl<R: RingOps, M: ModulusOps> Client<R, M> {
-    fn new(param: FhewBoolMpiParam, crs: FhewBoolMpiCrs<StdRng>, share_idx: usize) -> Self {
+    pub(crate) fn new(
+        param: FhewBoolMpiParam,
+        crs: FhewBoolMpiCrs<StdRng>,
+        share_idx: usize,
+    ) -> Self {
         let mut sk_seed = <StdRng as SeedableRng>::Seed::default();
         StdRng::from_entropy().fill_bytes(sk_seed.as_mut());
         Self {
@@ -34,16 +38,16 @@ impl<R: RingOps, M: ModulusOps> Client<R, M> {
         }
     }
 
-    fn ring(&self) -> &R {
+    pub(crate) fn ring(&self) -> &R {
         self.ring
             .get_or_init(|| RingOps::new(self.param.modulus, self.param.ring_size))
     }
 
-    fn mod_ks(&self) -> &M {
+    pub(crate) fn mod_ks(&self) -> &M {
         self.mod_ks.get_or_init(|| M::new(self.param.lwe_modulus))
     }
 
-    fn sk(&self) -> RlweSecretKeyOwned<i64> {
+    pub(crate) fn sk(&self) -> RlweSecretKeyOwned<i64> {
         RlweSecretKey::sample(
             self.param.ring_size,
             self.param.sk_distribution,
@@ -51,7 +55,8 @@ impl<R: RingOps, M: ModulusOps> Client<R, M> {
         )
     }
 
-    fn sk_ks(&self) -> LweSecretKeyOwned<i64> {
+    /// Key-Switched secret key
+    pub(crate) fn sk_ks(&self) -> LweSecretKeyOwned<i64> {
         LweSecretKey::sample(
             self.param.lwe_dimension,
             self.param.lwe_sk_distribution,
@@ -59,7 +64,7 @@ impl<R: RingOps, M: ModulusOps> Client<R, M> {
         )
     }
 
-    fn pk_share_gen(&self) -> SeededRlwePublicKeyOwned<R::Elem> {
+    pub(crate) fn pk_share_gen(&self) -> SeededRlwePublicKeyOwned<R::Elem> {
         let mut pk = SeededRlwePublicKey::allocate(self.param.ring_size);
         pk_share_gen(
             self.ring(),
@@ -72,11 +77,11 @@ impl<R: RingOps, M: ModulusOps> Client<R, M> {
         pk
     }
 
-    fn receive_pk(&mut self, pk: &RlwePublicKeyOwned<R::Elem>) {
+    pub(crate) fn receive_pk(&mut self, pk: &RlwePublicKeyOwned<R::Elem>) {
         self.pk = pk.cloned();
     }
 
-    fn bs_key_share_gen(&self) -> FhewBoolMpiKeyShareOwned<R::Elem, M::Elem> {
+    pub(crate) fn bs_key_share_gen(&self) -> FhewBoolMpiKeyShareOwned<R::Elem, M::Elem> {
         let mut bs_key_share = FhewBoolMpiKeyShare::allocate(self.param, self.share_idx);
         bs_key_share_gen(
             self.ring(),
@@ -91,7 +96,10 @@ impl<R: RingOps, M: ModulusOps> Client<R, M> {
         bs_key_share
     }
 
-    fn decrypt_share(
+    pub(crate) fn pk_encrypt(&self, m: u8) -> [FhewBoolCiphertextOwned<R::Elem>; 8] {
+        pk_encrypt(&self.param, self.ring(), &self.pk, m)
+    }
+    pub(crate) fn decrypt_share(
         &self,
         ct: [FhewBoolCiphertextOwned<R::Elem>; 8],
     ) -> [LweDecryptionShare<R::Elem>; 8] {
@@ -192,28 +200,31 @@ fn aggregate_decryption_shares<R: RingOps>(
         .fold(0, |m, b| (m << 1) | b as u8)
 }
 
-fn serialize_pk_share<R: RingOps>(
+pub(crate) fn serialize_pk_share<R: RingOps>(
     ring: &R,
     pk_share: &SeededRlwePublicKeyOwned<R::Elem>,
 ) -> Vec<u8> {
     bincode::serialize(&pk_share.compact(ring)).unwrap()
 }
 
-fn deserialize_pk_share<R: RingOps>(ring: &R, bytes: &[u8]) -> SeededRlwePublicKeyOwned<R::Elem> {
+pub(crate) fn deserialize_pk_share<R: RingOps>(
+    ring: &R,
+    bytes: &[u8],
+) -> SeededRlwePublicKeyOwned<R::Elem> {
     let pk_share_compact: SeededRlwePublicKey<Compact> = bincode::deserialize(bytes).unwrap();
     pk_share_compact.uncompact(ring)
 }
 
-fn serialize_pk<R: RingOps>(ring: &R, pk: &RlwePublicKeyOwned<R::Elem>) -> Vec<u8> {
+pub(crate) fn serialize_pk<R: RingOps>(ring: &R, pk: &RlwePublicKeyOwned<R::Elem>) -> Vec<u8> {
     bincode::serialize(&pk.compact(ring)).unwrap()
 }
 
-fn deserialize_pk<R: RingOps>(ring: &R, bytes: &[u8]) -> RlwePublicKeyOwned<R::Elem> {
+pub(crate) fn deserialize_pk<R: RingOps>(ring: &R, bytes: &[u8]) -> RlwePublicKeyOwned<R::Elem> {
     let pk_compact: RlwePublicKey<Compact> = bincode::deserialize(bytes).unwrap();
     pk_compact.uncompact(ring)
 }
 
-fn serialize_bs_key_share<R: RingOps, M: ModulusOps>(
+pub(crate) fn serialize_bs_key_share<R: RingOps, M: ModulusOps>(
     ring: &R,
     mod_ks: &M,
     bs_key_share: &FhewBoolMpiKeyShareOwned<R::Elem, M::Elem>,
@@ -221,7 +232,13 @@ fn serialize_bs_key_share<R: RingOps, M: ModulusOps>(
     bincode::serialize(&bs_key_share.compact(ring, mod_ks)).unwrap()
 }
 
-fn deserialize_bs_key_share<R: RingOps, M: ModulusOps>(
+pub(crate) fn serialize_decryption_share<R: RingOps>(
+    share: &[LweDecryptionShare<R::Elem>; 8],
+) -> Vec<u8> {
+    bincode::serialize(&share).unwrap()
+}
+
+pub(crate) fn deserialize_bs_key_share<R: RingOps, M: ModulusOps>(
     ring: &R,
     mod_ks: &M,
     bytes: &[u8],
@@ -230,11 +247,17 @@ fn deserialize_bs_key_share<R: RingOps, M: ModulusOps>(
     bs_key_share_compact.uncompact(ring, mod_ks)
 }
 
-fn serialize_cts<R: RingOps>(ring: &R, cts: [FhewBoolCiphertextOwned<R::Elem>; 8]) -> Vec<u8> {
+pub(crate) fn serialize_cts<R: RingOps>(
+    ring: &R,
+    cts: [FhewBoolCiphertextOwned<R::Elem>; 8],
+) -> Vec<u8> {
     bincode::serialize(&cts.map(|ct| ct.compact(ring))).unwrap()
 }
 
-fn deserialize_cts<R: RingOps>(ring: &R, bytes: &[u8]) -> [FhewBoolCiphertextOwned<R::Elem>; 8] {
+pub(crate) fn deserialize_cts<R: RingOps>(
+    ring: &R,
+    bytes: &[u8],
+) -> [FhewBoolCiphertextOwned<R::Elem>; 8] {
     let cts: [FhewBoolCiphertext<Compact>; 8] = bincode::deserialize(bytes).unwrap();
     cts.map(|ct| ct.uncompact(ring))
 }
