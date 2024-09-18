@@ -1,11 +1,13 @@
+use crate::phantom::Server as PhantomServer;
 use itertools::Itertools;
 use phantom_zone_evaluator::boolean::fhew::{param::I_4P, prelude::*};
+use rand::rngs::StdRng;
 use rocket::serde::{Deserialize, Serialize};
 use rocket::tokio::sync::Mutex;
 use rocket::Responder;
 use std::collections::HashMap;
-use std::fmt::Debug;
 use std::fmt::Display;
+use std::fmt::{self, Debug};
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -15,6 +17,8 @@ pub type DecryptionShare = Vec<u8>;
 pub type Word = Vec<u8>;
 /// Decryption share with output id
 pub type AnnotatedDecryptionShare = (usize, DecryptionShare);
+pub type ServerKeyShare = Vec<u8>;
+pub type ParamCRS = (FhewBoolMpiParam, FhewBoolMpiCrs<StdRng>);
 
 #[derive(Debug, Error)]
 pub(crate) enum Error {
@@ -87,20 +91,32 @@ impl Display for ServerState {
 
 pub(crate) type MutexServerStorage = Arc<Mutex<ServerStorage>>;
 
-#[derive(Debug)]
 pub(crate) struct ServerStorage {
-    pub(crate) seed: Seed,
+    pub(crate) ps: PhantomServer<NoisyPrimeRing, NonNativePowerOfTwo>,
     pub(crate) state: ServerState,
     pub(crate) users: Vec<UserRecord>,
 }
 
+impl fmt::Debug for ServerStorage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ServerStorage")
+            .field("state", &self.state)
+            .field("users", &self.users)
+            .finish()
+    }
+}
+
 impl ServerStorage {
-    pub(crate) fn new(seed: Seed) -> Self {
+    pub(crate) fn new(param: FhewBoolMpiParam) -> Self {
         Self {
-            seed,
+            ps: PhantomServer::new(param),
             state: ServerState::ReadyForJoining,
             users: vec![],
         }
+    }
+
+    pub(crate) fn get_param_crs(&self) -> ParamCRS {
+        self.ps.get_param_crs()
     }
 
     pub(crate) fn add_user(&mut self) -> UserId {

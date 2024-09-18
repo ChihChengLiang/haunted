@@ -3,10 +3,9 @@ use crate::{
         deserialize_cts, deserialize_pk, serialize_bs_key_share, serialize_decryption_share,
         serialize_pk_share, Client as PhantomClient,
     },
-    server::PARAMETER,
     types::{
         AnnotatedDecryptionShare, Decryptable, DecryptionShare, DecryptionShareSubmission,
-        ServerState, SksSubmission, UserId,
+        ParamCRS, ServerState, SksSubmission, UserId,
     },
 };
 use anyhow::{anyhow, bail, Error};
@@ -40,7 +39,7 @@ impl Wallet<ProductionClient> {
 }
 
 impl<RQ: Request + Clone> Wallet<RQ> {
-    async fn get_param_crs(&self) -> Result<(FhewBoolMpiParam, FhewBoolMpiCrs<StdRng>), Error> {
+    async fn get_param_crs(&self) -> Result<ParamCRS, Error> {
         self.rc.get("/param").await
     }
 
@@ -76,7 +75,8 @@ impl<RQ: Request + Clone> Wallet<RQ> {
             pc.ring(),
             pc.mod_ks(),
             &pc.bs_key_share_gen(),
-        ));
+        ))
+        .await?;
 
         Ok(SetupWallet {
             rc: self.rc.clone(),

@@ -5,6 +5,8 @@ use phantom_zone_evaluator::boolean::fhew::{param::I_4P, prelude::*};
 use rand::{rngs::StdRng, Rng, RngCore, SeedableRng};
 use serde::{Deserialize, Serialize};
 
+use crate::types::ParamCRS;
+
 #[derive(Serialize, Deserialize)]
 #[serde(bound(serialize = "", deserialize = ""))]
 pub(crate) struct Client<R: RingOps, M: ModulusOps> {
@@ -116,7 +118,7 @@ impl<R: RingOps, M: ModulusOps> Client<R, M> {
 
 #[derive(Serialize, Deserialize)]
 #[serde(bound(serialize = "", deserialize = ""))]
-struct Server<R: RingOps, M: ModulusOps> {
+pub(crate) struct Server<R: RingOps, M: ModulusOps> {
     param: FhewBoolMpiParam,
     crs: FhewBoolMpiCrs<StdRng>,
     pk: RlwePublicKeyOwned<R::Elem>,
@@ -125,7 +127,7 @@ struct Server<R: RingOps, M: ModulusOps> {
 }
 
 impl<R: RingOps, M: ModulusOps> Server<R, M> {
-    fn new(param: FhewBoolMpiParam) -> Self {
+    pub(crate) fn new(param: FhewBoolMpiParam) -> Self {
         Self {
             param,
             crs: FhewBoolMpiCrs::sample(StdRng::from_entropy()),
@@ -134,19 +136,23 @@ impl<R: RingOps, M: ModulusOps> Server<R, M> {
         }
     }
 
-    fn ring(&self) -> &R {
+    pub(crate) fn get_param_crs(&self) -> ParamCRS {
+        (self.param, self.crs)
+    }
+
+    pub(crate) fn ring(&self) -> &R {
         self.evaluator.ring()
     }
 
-    fn mod_ks(&self) -> &M {
+    pub(crate) fn mod_ks(&self) -> &M {
         self.evaluator.mod_ks()
     }
 
-    fn aggregate_pk_shares(&mut self, pk_shares: &[SeededRlwePublicKeyOwned<R::Elem>]) {
+    pub(crate) fn aggregate_pk_shares(&mut self, pk_shares: &[SeededRlwePublicKeyOwned<R::Elem>]) {
         aggregate_pk_shares(self.evaluator.ring(), &mut self.pk, &self.crs, pk_shares);
     }
 
-    fn aggregate_bs_key_shares<R2: RingOps<Elem = R::Elem>>(
+    pub(crate) fn aggregate_bs_key_shares<R2: RingOps<Elem = R::Elem>>(
         &mut self,
         bs_key_shares: &[FhewBoolMpiKeyShareOwned<R::Elem, M::Elem>],
     ) {
@@ -164,7 +170,7 @@ impl<R: RingOps, M: ModulusOps> Server<R, M> {
         self.evaluator = FhewBoolEvaluator::new(bs_key_prep);
     }
 
-    fn pk_encrypt(&self, m: u8) -> [FhewBoolCiphertextOwned<R::Elem>; 8] {
+    pub(crate) fn pk_encrypt(&self, m: u8) -> [FhewBoolCiphertextOwned<R::Elem>; 8] {
         pk_encrypt(&self.param, self.ring(), &self.pk, m)
     }
 }

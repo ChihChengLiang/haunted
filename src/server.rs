@@ -1,10 +1,9 @@
 use crate::types::{
     AnnotatedDecryptionShare, DecryptionShareSubmission, Error, ErrorResponse, MutexServerStorage,
-    Seed, ServerKeyShare, ServerState, ServerStorage, SksSubmission, UserId, UserStorage,
+    ParamCRS, ServerKeyShare, ServerState, ServerStorage, SksSubmission, UserId, UserStorage,
 };
-use phantom_zone::{
-    aggregate_server_key_shares, set_common_reference_seed, set_parameter_set, ParameterSelector,
-};
+
+use phantom_zone_evaluator::boolean::fhew::param::I_4P;
 use rand::{thread_rng, RngCore};
 use rocket::serde::json::Json;
 use rocket::serde::msgpack::MsgPack;
@@ -12,17 +11,10 @@ use rocket::{get, post, routes};
 use rocket::{Build, Rocket, State};
 use tokio::sync::Mutex;
 
-pub const PARAMETER: ParameterSelector = ParameterSelector::NonInteractiveLTE4Party;
-
-pub(crate) fn derive_server_key(server_key_shares: &[ServerKeyShare]) {
-    let server_key = aggregate_server_key_shares(server_key_shares);
-    server_key.set_server_key();
-}
-
 #[get("/param")]
-async fn get_param(ss: &State<MutexServerStorage>) -> Json<Seed> {
+async fn get_param(ss: &State<MutexServerStorage>) -> Json<ParamCRS> {
     let ss = ss.lock().await;
-    Json(ss.seed)
+    Json(ss.get_param_crs())
 }
 
 #[post("/register")]
@@ -33,7 +25,7 @@ async fn register(ss: &State<MutexServerStorage>) -> Result<Json<usize>, ErrorRe
     Ok(Json(user))
 }
 
-async fn setup_status() ->(){}
+async fn setup_status() -> () {}
 
 /// The user submits Server key shares
 #[post("/submit_sks", data = "<submission>", format = "msgpack")]
@@ -53,22 +45,16 @@ async fn submit_sks(
     if ss.check_cipher_submission() {
         ss.transit(ServerState::ReadyForInputs);
         let server_key_shares = ss.get_sks()?;
-        set_parameter_set(PARAMETER);
 
         tokio::task::spawn_blocking(move || {
             rayon::ThreadPoolBuilder::new()
                 .build_scoped(
                     // Initialize thread-local storage parameters
-                    |thread| {
-                        set_parameter_set(PARAMETER);
-                        thread.run()
-                    },
+                    |thread| thread.run(),
                     // Run parallel code under this pool
                     |pool| {
                         pool.install(|| {
                             println!("Derive server key");
-                            // Long running, global variable change
-                            derive_server_key(&server_key_shares);
                         })
                     },
                 )
@@ -116,19 +102,11 @@ async fn get_decryption_share(
     Ok(Json(decryption_shares[output_id].clone()))
 }
 
-pub fn setup(seed: &Seed) {
-    set_parameter_set(PARAMETER);
-    set_common_reference_seed(*seed);
-}
-
 pub fn rocket() -> Rocket<Build> {
-    let mut seed = [0u8; 32];
-    thread_rng().fill_bytes(&mut seed);
-    setup(&seed);
-
+    let param = I_4P;
     rocket::build()
         .manage(MutexServerStorage::new(Mutex::new(ServerStorage::new(
-            seed,
+            param,
         ))))
         .mount(
             "/",
