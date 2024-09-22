@@ -138,11 +138,11 @@ impl<R: RingOps, M: ModulusOps> Server<R, M> {
         (self.param, self.crs)
     }
 
-    pub(crate) fn ring(&self) -> &R {
+    fn ring(&self) -> &R {
         self.evaluator.ring()
     }
 
-    pub(crate) fn mod_ks(&self) -> &M {
+    fn mod_ks(&self) -> &M {
         self.evaluator.mod_ks()
     }
 
