@@ -48,8 +48,14 @@ impl<RQ: Request + Clone> Wallet<RQ> {
         self.rc.post_nobody("/register").await
     }
 
-    async fn get_server_pk(&self) -> Result<Vec<u8>, Error> {
-        todo!()
+    async fn acquire_pk(
+        &self,
+        pc: &mut PhantomClient<PrimeRing, NonNativePowerOfTwo>,
+    ) -> Result<Vec<u8>, Error> {
+        let pk_share = serialize_pk_share(pc.ring(), &pc.pk_share_gen());
+        let server_pk = vec![];
+        pc.receive_pk(&deserialize_pk(pc.ring(), &server_pk));
+        Ok(vec![])
     }
 
     async fn submit_bs_key_share(&self, bs_key_share: Vec<u8>) -> Result<UserId, Error> {
@@ -65,10 +71,7 @@ impl<RQ: Request + Clone> Wallet<RQ> {
         let (param, crs) = self.get_param_crs().await?;
         let user_id = self.register().await?;
         let mut pc = PhantomClient::<PrimeRing, NonNativePowerOfTwo>::new(param, crs, user_id);
-        let pk_share = serialize_pk_share(pc.ring(), &pc.pk_share_gen());
-
-        let server_pk = self.get_server_pk().await?;
-        pc.receive_pk(&deserialize_pk(pc.ring(), &server_pk));
+        self.acquire_pk(&mut pc).await?;
         self.submit_bs_key_share(serialize_bs_key_share(
             pc.ring(),
             pc.mod_ks(),
