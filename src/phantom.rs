@@ -291,79 +291,83 @@ pub(crate) fn deserialize_cts<R: RingOps>(
     cts.map(|ct| ct.uncompact(ring))
 }
 
-fn function<T>(a: &T, b: &T, c: &T, d: &T, e: &T) -> T
-where
-    T: for<'t> NumOps<&'t T, T>,
-    for<'t> &'t T: NumOps<&'t T, T>,
-{
-    (((a + b) - c) * d) % e
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn function<T>(a: &T, b: &T, c: &T, d: &T, e: &T) -> T
+    where
+        T: for<'t> NumOps<&'t T, T>,
+        for<'t> &'t T: NumOps<&'t T, T>,
+    {
+        (((a + b) - c) * d) % e
+    }
+    #[test]
+    fn test_phantom() {
+        let mut server = Server::<NoisyPrimeRing, NonNativePowerOfTwo>::new(I_4P);
+        let mut clients = (0..server.param.total_shares)
+            .map(|share_idx| {
+                Client::<PrimeRing, NonNativePowerOfTwo>::new(server.param, server.crs, share_idx)
+            })
+            .collect_vec();
 
-fn main() {
-    let mut server = Server::<NoisyPrimeRing, NonNativePowerOfTwo>::new(I_4P);
-    let mut clients = (0..server.param.total_shares)
-        .map(|share_idx| {
-            Client::<PrimeRing, NonNativePowerOfTwo>::new(server.param, server.crs, share_idx)
-        })
-        .collect_vec();
+        // Round 1
 
-    // Round 1
+        // Clients generate public key shares
+        let pk_shares = clients
+            .iter()
+            .map(|client| serialize_pk_share(client.ring(), &client.pk_share_gen()))
+            .collect_vec();
 
-    // Clients generate public key shares
-    let pk_shares = clients
-        .iter()
-        .map(|client| serialize_pk_share(client.ring(), &client.pk_share_gen()))
-        .collect_vec();
+        // Server aggregates public key shares
+        server.aggregate_pk_shares(
+            &pk_shares
+                .into_iter()
+                .map(|bytes| deserialize_pk_share(server.ring(), &bytes))
+                .collect_vec(),
+        );
+        let pk = serialize_pk(server.ring(), &server.pk);
 
-    // Server aggregates public key shares
-    server.aggregate_pk_shares(
-        &pk_shares
-            .into_iter()
-            .map(|bytes| deserialize_pk_share(server.ring(), &bytes))
-            .collect_vec(),
-    );
-    let pk = serialize_pk(server.ring(), &server.pk);
+        // Round 2
 
-    // Round 2
+        // Clients generate bootstrapping key shares
+        let bs_key_shares = clients
+            .iter_mut()
+            .map(|client| {
+                client.receive_pk(&deserialize_pk(client.ring(), &pk));
+                serialize_bs_key_share(client.ring(), client.mod_ks(), &client.bs_key_share_gen())
+            })
+            .collect_vec();
 
-    // Clients generate bootstrapping key shares
-    let bs_key_shares = clients
-        .iter_mut()
-        .map(|client| {
-            client.receive_pk(&deserialize_pk(client.ring(), &pk));
-            serialize_bs_key_share(client.ring(), client.mod_ks(), &client.bs_key_share_gen())
-        })
-        .collect_vec();
+        // Server aggregates bootstrapping key shares
+        server.aggregate_bs_key_shares::<PrimeRing>(
+            &bs_key_shares
+                .into_iter()
+                .map(|bytes| deserialize_bs_key_share(server.ring(), server.mod_ks(), &bytes))
+                .collect_vec(),
+        );
 
-    // Server aggregates bootstrapping key shares
-    server.aggregate_bs_key_shares::<PrimeRing>(
-        &bs_key_shares
-            .into_iter()
-            .map(|bytes| deserialize_bs_key_share(server.ring(), server.mod_ks(), &bytes))
-            .collect_vec(),
-    );
+        // Server performs FHE evaluation
+        let m = from_fn(|_| StdRng::from_entropy().gen());
+        let g = {
+            let [a, b, c, d, e] = &m.map(Wrapping);
+            function(a, b, c, d, e).0
+        };
+        let ct_g = {
+            let [a, b, c, d, e] =
+                &m.map(|m| FheU8::from_cts(&server.evaluator, server.pk_encrypt_u8(m)));
+            serialize_cts(server.ring(), function(a, b, c, d, e).into_cts())
+        };
 
-    // Server performs FHE evaluation
-    let m = from_fn(|_| StdRng::from_entropy().gen());
-    let g = {
-        let [a, b, c, d, e] = &m.map(Wrapping);
-        function(a, b, c, d, e).0
-    };
-    let ct_g = {
-        let [a, b, c, d, e] =
-            &m.map(|m| FheU8::from_cts(&server.evaluator, server.pk_encrypt_u8(m)));
-        serialize_cts(server.ring(), function(a, b, c, d, e).into_cts())
-    };
+        // Clients generate decryption share of evaluation output
+        let ct_g_dec_shares = clients
+            .iter()
+            .map(|client| client.decrypt_share(deserialize_cts(client.ring(), &ct_g)))
+            .collect_vec();
 
-    // Clients generate decryption share of evaluation output
-    let ct_g_dec_shares = clients
-        .iter()
-        .map(|client| client.decrypt_share(deserialize_cts(client.ring(), &ct_g)))
-        .collect_vec();
-
-    // Aggregate decryption shares
-    assert_eq!(g, {
-        let ct_g = deserialize_cts(clients[0].ring(), &ct_g);
-        aggregate_decryption_shares(clients[0].ring(), ct_g, &ct_g_dec_shares)
-    });
+        // Aggregate decryption shares
+        assert_eq!(g, {
+            let ct_g = deserialize_cts(clients[0].ring(), &ct_g);
+            aggregate_decryption_shares(clients[0].ring(), ct_g, &ct_g_dec_shares)
+        });
+    }
 }
