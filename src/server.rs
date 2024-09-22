@@ -28,8 +28,8 @@ async fn register(ss: &State<MutexServerStorage>) -> Result<Json<usize>, ErrorRe
 async fn setup_status() -> () {}
 
 /// The user submits Server key shares
-#[post("/submit_sks", data = "<submission>", format = "msgpack")]
-async fn submit_sks(
+#[post("/submit_bsks", data = "<submission>", format = "msgpack")]
+async fn submit_bsks(
     submission: MsgPack<SksSubmission>,
     ss: &State<MutexServerStorage>,
 ) -> Result<Json<UserId>, ErrorResponse> {
@@ -113,7 +113,7 @@ pub fn rocket() -> Rocket<Build> {
             routes![
                 get_param,
                 register,
-                submit_sks,
+                submit_bsks,
                 submit_decryption_shares,
                 get_decryption_share,
             ],

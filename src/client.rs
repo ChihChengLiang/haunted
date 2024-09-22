@@ -3,7 +3,7 @@ use crate::{
         deserialize_cts, deserialize_pk, serialize_bs_key_share, serialize_decryption_share,
         serialize_pk_share, Client as PhantomClient,
     },
-    server::rocket_uri_macro_get_param,
+    server::*,
     types::{
         AnnotatedDecryptionShare, Decryptable, DecryptionShare, DecryptionShareSubmission,
         ParamCRS, ServerState, SksSubmission, UserId,
@@ -48,16 +48,14 @@ impl<RQ: Request + Clone> Wallet<RQ> {
         self.rc.post_nobody("/register").await
     }
 
-    async fn submit_pk_share(&self, pk_share: Vec<u8>) -> Result<UserId, Error> {
-        self.rc.post_msgpack("/submit", &pk_share).await
-    }
-
     async fn get_server_pk(&self) -> Result<Vec<u8>, Error> {
         todo!()
     }
 
     async fn submit_bs_key_share(&self, bs_key_share: Vec<u8>) -> Result<UserId, Error> {
-        self.rc.post_msgpack("/submit", &bs_key_share).await
+        self.rc
+            .post_msgpack(&uri!(submit_bsks).to_string(), &bs_key_share)
+            .await
     }
 
     /// Complete the flow to derive server key shares
@@ -68,7 +66,6 @@ impl<RQ: Request + Clone> Wallet<RQ> {
         let user_id = self.register().await?;
         let mut pc = PhantomClient::<PrimeRing, NonNativePowerOfTwo>::new(param, crs, user_id);
         let pk_share = serialize_pk_share(pc.ring(), &pc.pk_share_gen());
-        self.submit_pk_share(pk_share).await?;
 
         let server_pk = self.get_server_pk().await?;
         pc.receive_pk(&deserialize_pk(pc.ring(), &server_pk));
