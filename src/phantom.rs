@@ -98,6 +98,13 @@ impl<R: RingOps, M: ModulusOps> Client<R, M> {
         bs_key_share
     }
 
+    pub(crate) fn pk_encrypt_bit(
+        &self,
+        m: impl IntoIterator<Item = bool>,
+    ) -> Vec<FhewBoolCiphertextOwned<R::Elem>> {
+        pk_encrypt_bit(&self.param, self.ring(), &self.pk, m)
+    }
+
     pub(crate) fn pk_encrypt_u8(&self, m: u8) -> [FhewBoolCiphertextOwned<R::Elem>; 8] {
         pk_encrypt_u8(&self.param, self.ring(), &self.pk, m)
     }
@@ -170,6 +177,13 @@ impl<R: RingOps, M: ModulusOps> Server<R, M> {
         self.evaluator = FhewBoolEvaluator::new(bs_key_prep);
     }
 
+    pub(crate) fn pk_encrypt_bit(
+        &self,
+        m: impl IntoIterator<Item = bool>,
+    ) -> Vec<FhewBoolCiphertextOwned<R::Elem>> {
+        pk_encrypt_bit(&self.param, self.ring(), &self.pk, m)
+    }
+
     pub(crate) fn pk_encrypt_u8(&self, m: u8) -> [FhewBoolCiphertextOwned<R::Elem>; 8] {
         pk_encrypt_u8(&self.param, self.ring(), &self.pk, m)
     }
@@ -190,6 +204,15 @@ fn pk_encrypt_u8<R: RingOps>(
     )
     .try_into()
     .unwrap()
+}
+
+fn pk_encrypt_bit<R: RingOps>(
+    param: &FhewBoolParam,
+    ring: &R,
+    pk: &RlwePublicKeyOwned<R::Elem>,
+    m: impl IntoIterator<Item = bool>,
+) -> Vec<FhewBoolCiphertextOwned<R::Elem>> {
+    FhewBoolCiphertext::batched_pk_encrypt(param, ring, pk, m, &mut StdLweRng::from_entropy())
 }
 
 fn aggregate_decryption_shares<R: RingOps>(
@@ -327,7 +350,8 @@ fn main() {
         function(a, b, c, d, e).0
     };
     let ct_g = {
-        let [a, b, c, d, e] = &m.map(|m| FheU8::from_cts(&server.evaluator, server.pk_encrypt_u8(m)));
+        let [a, b, c, d, e] =
+            &m.map(|m| FheU8::from_cts(&server.evaluator, server.pk_encrypt_u8(m)));
         serialize_cts(server.ring(), function(a, b, c, d, e).into_cts())
     };
 
