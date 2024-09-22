@@ -98,8 +98,8 @@ impl<R: RingOps, M: ModulusOps> Client<R, M> {
         bs_key_share
     }
 
-    pub(crate) fn pk_encrypt(&self, m: u8) -> [FhewBoolCiphertextOwned<R::Elem>; 8] {
-        pk_encrypt(&self.param, self.ring(), &self.pk, m)
+    pub(crate) fn pk_encrypt_u8(&self, m: u8) -> [FhewBoolCiphertextOwned<R::Elem>; 8] {
+        pk_encrypt_u8(&self.param, self.ring(), &self.pk, m)
     }
     pub(crate) fn decrypt_share(
         &self,
@@ -170,12 +170,12 @@ impl<R: RingOps, M: ModulusOps> Server<R, M> {
         self.evaluator = FhewBoolEvaluator::new(bs_key_prep);
     }
 
-    pub(crate) fn pk_encrypt(&self, m: u8) -> [FhewBoolCiphertextOwned<R::Elem>; 8] {
-        pk_encrypt(&self.param, self.ring(), &self.pk, m)
+    pub(crate) fn pk_encrypt_u8(&self, m: u8) -> [FhewBoolCiphertextOwned<R::Elem>; 8] {
+        pk_encrypt_u8(&self.param, self.ring(), &self.pk, m)
     }
 }
 
-fn pk_encrypt<R: RingOps>(
+fn pk_encrypt_u8<R: RingOps>(
     param: &FhewBoolParam,
     ring: &R,
     pk: &RlwePublicKeyOwned<R::Elem>,
@@ -327,7 +327,7 @@ fn main() {
         function(a, b, c, d, e).0
     };
     let ct_g = {
-        let [a, b, c, d, e] = &m.map(|m| FheU8::from_cts(&server.evaluator, server.pk_encrypt(m)));
+        let [a, b, c, d, e] = &m.map(|m| FheU8::from_cts(&server.evaluator, server.pk_encrypt_u8(m)));
         serialize_cts(server.ring(), function(a, b, c, d, e).into_cts())
     };
 
