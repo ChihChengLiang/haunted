@@ -1,8 +1,5 @@
 use crate::{
-    phantom::{
-        deserialize_cts, deserialize_pk, serialize_bs_key_share, serialize_decryption_share,
-        serialize_pk_share, Client as PhantomClient,
-    },
+    phantom::Client as PhantomClient,
     server::*,
     types::{
         AnnotatedDecryptionShare, Decryptable, DecryptionShare, DecryptionShareSubmission,
@@ -52,9 +49,9 @@ impl<RQ: Request + Clone> Wallet<RQ> {
         &self,
         pc: &mut PhantomClient<PrimeRing, NonNativePowerOfTwo>,
     ) -> Result<Vec<u8>, Error> {
-        let pk_share = serialize_pk_share(pc.ring(), &pc.pk_share_gen());
+        let pk_share = pc.pk_share_gen();
         let server_pk = vec![];
-        pc.receive_pk(&deserialize_pk(pc.ring(), &server_pk));
+        pc.receive_pk(&server_pk);
         Ok(vec![])
     }
 
@@ -72,12 +69,7 @@ impl<RQ: Request + Clone> Wallet<RQ> {
         let user_id = self.register().await?;
         let mut pc = PhantomClient::<PrimeRing, NonNativePowerOfTwo>::new(param, crs, user_id);
         self.acquire_pk(&mut pc).await?;
-        self.submit_bs_key_share(serialize_bs_key_share(
-            pc.ring(),
-            pc.mod_ks(),
-            &pc.bs_key_share_gen(),
-        ))
-        .await?;
+        self.submit_bs_key_share(pc.bs_key_share_gen()).await?;
 
         Ok(SetupWallet {
             rc: self.rc.clone(),
@@ -102,11 +94,7 @@ impl<RQ: Request> SetupWallet<RQ> {
 
     fn generate_decryption_share(&self, decryptable: &Decryptable) -> AnnotatedDecryptionShare {
         // Generate decryption share for the given decryptable
-        let decryption_share = serialize_decryption_share::<PrimeRing>(
-            &self
-                .pc
-                .decrypt_share(deserialize_cts(self.pc.ring(), &decryptable.word)),
-        );
+        let decryption_share = self.pc.decrypt_share(&decryptable.word);
 
         // Create an AnnotatedDecryptionShare with the decryptable's ID and the generated share
         (decryptable.id, decryption_share)
