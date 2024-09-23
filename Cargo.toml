@@ -5,8 +5,9 @@ edition = "2021"
 
 [dependencies]
 rocket = { version = "0.5.1", features = ["json", "msgpack"] }
-phantom-zone = { git = "https://github.com/ChihChengLiang/phantom-zone", rev = "7645ad5b8a329429f44feb2485b0715aad86dab1", features = [
-    "non_interactive_mp",
+phantom-zone-evaluator = { git = "https://github.com/gausslabs/phantom-zone", rev = "34d4af46697717cd7039de1c91892916af5e9e21", features = [
+    "serde",
+    "dev",
 ] }
 anyhow = { version = "1.0.86" }
 thiserror = { version = "1.0.63" }
@@ -19,3 +20,5 @@ itertools = { version = "0.13.0" }
 rayon = { version = "1.10.0" }
 tokio-util = { version = "0.7.11" }
 indicatif = { version = "0.17.8" }
+num-traits = { version = "0.2.19" }
+bincode = { version = "1.3.3" }

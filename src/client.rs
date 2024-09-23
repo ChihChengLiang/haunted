@@ -1,19 +1,20 @@
 use crate::{
-    server::PARAMETER,
+    phantom::Client as PhantomClient,
+    server::*,
     types::{
-        AnnotatedDecryptionShare, ClientKey, Decryptable, DecryptionShare,
-        DecryptionShareSubmission, Seed, ServerKeyShare, ServerState, SksSubmission, UserId,
+        AnnotatedDecryptionShare, Decryptable, DecryptionShare, DecryptionShareSubmission,
+        ParamCRS, ServerState, SksSubmission, UserId,
     },
 };
 use anyhow::{anyhow, bail, Error};
 use indicatif::{ProgressBar, ProgressStyle};
 use itertools::Itertools;
-use phantom_zone::{
-    gen_client_key, gen_server_key_share, set_common_reference_seed, set_parameter_set, Decryptor,
-    MultiPartyDecryptor,
+use phantom_zone_evaluator::boolean::fhew::prelude::{
+    FhewBoolMpiCrs, FhewBoolMpiParam, NonNativePowerOfTwo, PrimeRing,
 };
+use rand::rngs::StdRng;
 use reqwest::{self, header::CONTENT_TYPE, Client};
-use rocket::serde::msgpack;
+use rocket::{serde::msgpack, uri};
 use serde::{Deserialize, Serialize};
 use std::{
     future::Future,
@@ -36,41 +37,44 @@ impl Wallet<ProductionClient> {
 }
 
 impl<RQ: Request + Clone> Wallet<RQ> {
-    async fn get_seed(&self) -> Result<Seed, Error> {
-        self.rc.get("/param").await
+    async fn get_param_crs(&self) -> Result<ParamCRS, Error> {
+        self.rc.get(&uri!(get_param).to_string()).await
     }
 
     async fn register(&self) -> Result<UserId, Error> {
         self.rc.post_nobody("/register").await
     }
 
-    async fn submit_sks(&self, user_id: UserId, sks: &ServerKeyShare) -> Result<UserId, Error> {
-        let submission = SksSubmission {
-            user_id,
-            sks: sks.clone(),
-        };
-        self.rc.post_msgpack("/submit", &submission).await
+    async fn acquire_pk(
+        &self,
+        pc: &mut PhantomClient<PrimeRing, NonNativePowerOfTwo>,
+    ) -> Result<Vec<u8>, Error> {
+        let pk_share = pc.pk_share_gen();
+        let server_pk = vec![];
+        pc.receive_pk(&server_pk);
+        Ok(vec![])
     }
+
+    async fn submit_bs_key_share(&self, bs_key_share: Vec<u8>) -> Result<UserId, Error> {
+        self.rc
+            .post_msgpack(&uri!(submit_bsks).to_string(), &bs_key_share)
+            .await
+    }
+
     /// Complete the flow to derive server key shares
     ///
     /// Wait actions from other users
     pub async fn run_setup(&self) -> Result<SetupWallet<RQ>, Error> {
-        let seed = self.get_seed().await?;
-        set_parameter_set(PARAMETER);
-        set_common_reference_seed(seed);
-        let client_key = gen_client_key();
-
+        let (param, crs) = self.get_param_crs().await?;
         let user_id = self.register().await?;
-        // Wait registration to conclude
-        let total_users = 0;
-        let server_key_share = gen_server_key_share(user_id, total_users, &client_key);
-        self.submit_sks(user_id, &server_key_share).await?;
+        let mut pc = PhantomClient::<PrimeRing, NonNativePowerOfTwo>::new(param, crs, user_id);
+        self.acquire_pk(&mut pc).await?;
+        self.submit_bs_key_share(pc.bs_key_share_gen()).await?;
 
         Ok(SetupWallet {
             rc: self.rc.clone(),
             user_id,
-            client_key,
-            server_key_share,
+            pc,
         })
     }
 }
@@ -78,8 +82,7 @@ impl<RQ: Request + Clone> Wallet<RQ> {
 pub struct SetupWallet<RQ: Request> {
     rc: RQ,
     user_id: UserId,
-    client_key: ClientKey,
-    server_key_share: ServerKeyShare,
+    pc: PhantomClient<PrimeRing, NonNativePowerOfTwo>,
 }
 
 impl<RQ: Request> SetupWallet<RQ> {
@@ -91,11 +94,7 @@ impl<RQ: Request> SetupWallet<RQ> {
 
     fn generate_decryption_share(&self, decryptable: &Decryptable) -> AnnotatedDecryptionShare {
         // Generate decryption share for the given decryptable
-        let decryption_share = decryptable
-            .word
-            .iter()
-            .map(|fhe_bit| self.client_key.gen_decryption_share(fhe_bit))
-            .collect_vec();
+        let decryption_share = self.pc.decrypt_share(&decryptable.word);
 
         // Create an AnnotatedDecryptionShare with the decryptable's ID and the generated share
         (decryptable.id, decryption_share)
