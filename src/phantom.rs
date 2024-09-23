@@ -85,8 +85,9 @@ impl<R: RingOps, M: ModulusOps> Client<R, M> {
     pub(crate) fn pk_encrypt_bit(
         &self,
         m: impl IntoIterator<Item = bool>,
-    ) -> Vec<FhewBoolCiphertextOwned<R::Elem>> {
-        pk_encrypt_bit(&self.param, &self.ring, &self.pk, m)
+    ) -> Vec<u8> {
+      let cts =  pk_encrypt_bit(&self.param, &self.ring, &self.pk, m);
+      serialize_cts_bits(&self.ring, &cts)
     }
 
     pub(crate) fn pk_encrypt_u8(&self, m: u8) -> [FhewBoolCiphertextOwned<R::Elem>; 8] {
@@ -168,7 +169,7 @@ impl<R: RingOps, M: ModulusOps> Server<R, M> {
         self.evaluator = FhewBoolEvaluator::new(bs_key_prep);
     }
 
-    pub(crate) fn pk_encrypt_bit(
+    pub(crate) fn pk_encrypt_bits(
         &self,
         m: impl IntoIterator<Item = bool>,
     ) -> Vec<FhewBoolCiphertextOwned<R::Elem>> {
@@ -303,8 +304,9 @@ mod tests {
     use super::*;
     use core::{array::from_fn, num::Wrapping};
     use num_traits::NumOps;
-    use phantom_zone_evaluator::boolean::fhew::param::I_4P;
+    use phantom_zone_evaluator::boolean::{fhew::param::I_4P, FheBool};
     use rand::Rng;
+    use std::ops::{BitAnd, BitOr, BitXor};
 
     fn function<T>(a: &T, b: &T, c: &T, d: &T, e: &T) -> T
     where
@@ -368,6 +370,91 @@ mod tests {
             let [a, b, c, d, e] =
                 &m.map(|m| FheU8::from_cts(&server.evaluator, server.pk_encrypt_u8(m)));
             serialize_cts_u8(server.ring(), function(a, b, c, d, e).into_cts())
+        };
+
+        // Clients generate decryption share of evaluation output
+        let ct_g_dec_shares = clients
+            .iter()
+            .map(|client| client.decrypt_share_u8(&ct_g))
+            .collect_vec();
+
+        // Aggregate decryption shares
+        assert_eq!(g, clients[0].decrypt_u8(&ct_g, &ct_g_dec_shares));
+    }
+    trait BitOps<Rhs = Self, Output = Self>:
+        BitAnd<Rhs, Output = Output> + BitOr<Rhs, Output = Output> + BitXor<Rhs, Output = Output>
+    {
+    }
+
+    impl<T, Rhs, Output> BitOps<Rhs, Output> for T where
+        T: BitAnd<Rhs, Output = Output>
+            + BitOr<Rhs, Output = Output>
+            + BitXor<Rhs, Output = Output>
+    {
+    }
+
+    fn function_bit<T>(a: &T, b: &T, c: &T, d: &T) -> T
+    where
+        T: for<'t> BitOps<&'t T, T>,
+        for<'t> &'t T: BitOps<&'t T, T>,
+    {
+        ((a | b) & c) ^ d
+    }
+    #[test]
+    fn test_phantom_bits() {
+        let mut server = Server::<NoisyPrimeRing, NonNativePowerOfTwo>::new(I_4P);
+        let mut clients = (0..server.param.total_shares)
+            .map(|share_idx| {
+                Client::<PrimeRing, NonNativePowerOfTwo>::new(server.param, server.crs, share_idx)
+            })
+            .collect_vec();
+
+        // Round 1
+
+        // Clients generate public key shares
+        let pk_shares = clients
+            .iter()
+            .map(|client| client.pk_share_gen())
+            .collect_vec();
+
+        // Server aggregates public key shares
+        server.aggregate_pk_shares(
+            &pk_shares
+                .into_iter()
+                .map(|bytes| deserialize_pk_share(server.ring(), &bytes))
+                .collect_vec(),
+        );
+        let pk = serialize_pk(server.ring(), &server.pk);
+
+        // Round 2
+
+        // Clients generate bootstrapping key shares
+        let bs_key_shares = clients
+            .iter_mut()
+            .map(|client| {
+                client.receive_pk(&pk);
+                client.bs_key_share_gen()
+            })
+            .collect_vec();
+
+        // Server aggregates bootstrapping key shares
+        server.aggregate_bs_key_shares::<PrimeRing>(
+            &bs_key_shares
+                .into_iter()
+                .map(|bytes| deserialize_bs_key_share(server.ring(), server.mod_ks(), &bytes))
+                .collect_vec(),
+        );
+
+        // Server performs FHE evaluation
+        let m: [bool; 4] = from_fn(|_| StdRng::from_entropy().gen());
+        let g = {
+            let [a, b, c, d] = &m;
+            function_bit(a, b, c, d)
+        };
+        let ct_g = {
+            let bytes = clients[0].pk_encrypt_bit(m);
+            let [a, b, c, d]: [FheBool<_>;4] = deserialize_cts_bits(server.ring(), &bytes).try_into().unwrap();
+            serialize_cts_bits(server.ring(), function_bit(&a, &b, &c, &d).into_cts())
         };
 
         // Clients generate decryption share of evaluation output
