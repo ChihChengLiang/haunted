@@ -94,7 +94,7 @@ impl<RQ: Request> SetupWallet<RQ> {
 
     fn generate_decryption_share(&self, decryptable: &Decryptable) -> AnnotatedDecryptionShare {
         // Generate decryption share for the given decryptable
-        let decryption_share = self.pc.decrypt_share(&decryptable.word);
+        let decryption_share = self.pc.decrypt_share_u8(&decryptable.word);
 
         // Create an AnnotatedDecryptionShare with the decryptable's ID and the generated share
         (decryptable.id, decryption_share)

@@ -92,8 +92,8 @@ impl<R: RingOps, M: ModulusOps> Client<R, M> {
     pub(crate) fn pk_encrypt_u8(&self, m: u8) -> [FhewBoolCiphertextOwned<R::Elem>; 8] {
         pk_encrypt_u8(&self.param, &self.ring, &self.pk, m)
     }
-    pub(crate) fn decrypt_share(&self, ct: &[u8]) -> Vec<u8> {
-        let ct = deserialize_cts(&self.ring, &ct);
+    pub(crate) fn decrypt_share_u8(&self, ct: &[u8]) -> Vec<u8> {
+        let ct = deserialize_cts_u8(&self.ring, &ct);
         let ds: [LweDecryptionShare<R::Elem>; 8] = ct.map(|ct| {
             ct.decrypt_share(
                 &self.ring,
@@ -102,13 +102,13 @@ impl<R: RingOps, M: ModulusOps> Client<R, M> {
                 &mut StdLweRng::from_entropy(),
             )
         });
-        serialize_decryption_share::<R>(&ds)
+        serialize_decryption_share_u8::<R>(&ds)
     }
     pub(crate) fn decrypt_u8(&self, ct: &[u8], dec_shares: &[Vec<u8>]) -> u8 {
-        let ct = deserialize_cts(&self.ring, &ct);
+        let ct = deserialize_cts_u8(&self.ring, &ct);
         let dec_shares = dec_shares
             .iter()
-            .map(|ds| deserialize_decryption_share::<R>(ds))
+            .map(|ds| deserialize_decryption_share_u8::<R>(ds))
             .collect_vec();
         aggregate_decryption_shares(&self.ring, ct, &dec_shares)
     }
@@ -252,11 +252,19 @@ fn serialize_bs_key_share<R: RingOps, M: ModulusOps>(
     bincode::serialize(&bs_key_share.compact(ring, mod_ks)).unwrap()
 }
 
-fn serialize_decryption_share<R: RingOps>(share: &[LweDecryptionShare<R::Elem>; 8]) -> Vec<u8> {
+fn serialize_decryption_share_u8<R: RingOps>(share: &[LweDecryptionShare<R::Elem>; 8]) -> Vec<u8> {
     bincode::serialize(&share).unwrap()
 }
 
-fn deserialize_decryption_share<R: RingOps>(share: &[u8]) -> [LweDecryptionShare<R::Elem>; 8] {
+fn serialize_decryption_share_bits<R: RingOps>(share: &[LweDecryptionShare<R::Elem>]) -> Vec<u8> {
+    bincode::serialize(&share).unwrap()
+}
+
+fn deserialize_decryption_share_u8<R: RingOps>(share: &[u8]) -> [LweDecryptionShare<R::Elem>; 8] {
+    bincode::deserialize(&share).unwrap()
+}
+
+fn deserialize_decryption_share_bits<R: RingOps>(share: &[u8]) -> Vec<LweDecryptionShare<R::Elem>> {
     bincode::deserialize(&share).unwrap()
 }
 
@@ -269,12 +277,25 @@ fn deserialize_bs_key_share<R: RingOps, M: ModulusOps>(
     bs_key_share_compact.uncompact(ring, mod_ks)
 }
 
-fn serialize_cts<R: RingOps>(ring: &R, cts: [FhewBoolCiphertextOwned<R::Elem>; 8]) -> Vec<u8> {
+fn serialize_cts_u8<R: RingOps>(ring: &R, cts: [FhewBoolCiphertextOwned<R::Elem>; 8]) -> Vec<u8> {
     bincode::serialize(&cts.map(|ct| ct.compact(ring))).unwrap()
 }
-fn deserialize_cts<R: RingOps>(ring: &R, bytes: &[u8]) -> [FhewBoolCiphertextOwned<R::Elem>; 8] {
+
+fn serialize_cts_bits<R: RingOps>(ring: &R, cts: &[FhewBoolCiphertextOwned<R::Elem>]) -> Vec<u8> {
+    bincode::serialize(&cts.iter().map(|ct| ct.compact(ring)).collect_vec()).unwrap()
+}
+
+fn deserialize_cts_u8<R: RingOps>(ring: &R, bytes: &[u8]) -> [FhewBoolCiphertextOwned<R::Elem>; 8] {
     let cts: [FhewBoolCiphertext<Compact>; 8] = bincode::deserialize(bytes).unwrap();
     cts.map(|ct| ct.uncompact(ring))
+}
+
+fn deserialize_cts_bits<R: RingOps>(
+    ring: &R,
+    bytes: &[u8],
+) -> Vec<FhewBoolCiphertextOwned<R::Elem>> {
+    let cts: Vec<FhewBoolCiphertext<Compact>> = bincode::deserialize(bytes).unwrap();
+    cts.iter().map(|ct| ct.uncompact(ring)).collect_vec()
 }
 
 #[cfg(test)]
@@ -346,13 +367,13 @@ mod tests {
         let ct_g = {
             let [a, b, c, d, e] =
                 &m.map(|m| FheU8::from_cts(&server.evaluator, server.pk_encrypt_u8(m)));
-            serialize_cts(server.ring(), function(a, b, c, d, e).into_cts())
+            serialize_cts_u8(server.ring(), function(a, b, c, d, e).into_cts())
         };
 
         // Clients generate decryption share of evaluation output
         let ct_g_dec_shares = clients
             .iter()
-            .map(|client| client.decrypt_share(&ct_g))
+            .map(|client| client.decrypt_share_u8(&ct_g))
             .collect_vec();
 
         // Aggregate decryption shares
