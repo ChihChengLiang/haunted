@@ -1,6 +1,6 @@
 use crate::types::ParamCRS;
 use itertools::Itertools;
-use phantom_zone_evaluator::boolean::fhew::prelude::*;
+use phantom_zone_evaluator::boolean::{fhew::prelude::*, FheBool};
 use rand::{rngs::StdRng, RngCore, SeedableRng};
 use serde::{Deserialize, Serialize};
 
@@ -82,12 +82,9 @@ impl<R: RingOps, M: ModulusOps> Client<R, M> {
         serialize_bs_key_share(&self.ring, &self.mod_ks, &bs_key_share)
     }
 
-    pub(crate) fn pk_encrypt_bit(
-        &self,
-        m: impl IntoIterator<Item = bool>,
-    ) -> Vec<u8> {
-      let cts =  pk_encrypt_bit(&self.param, &self.ring, &self.pk, m);
-      serialize_cts_bits(&self.ring, &cts)
+    pub(crate) fn pk_encrypt_bit(&self, m: impl IntoIterator<Item = bool>) -> Vec<u8> {
+        let cts = pk_encrypt_bit(&self.param, &self.ring, &self.pk, m);
+        serialize_cts_bits(&self.ring, &cts)
     }
 
     pub(crate) fn pk_encrypt_u8(&self, m: u8) -> [FhewBoolCiphertextOwned<R::Elem>; 8] {
@@ -167,6 +164,13 @@ impl<R: RingOps, M: ModulusOps> Server<R, M> {
             bs_key_prep
         };
         self.evaluator = FhewBoolEvaluator::new(bs_key_prep);
+    }
+
+    pub(crate) fn deserialize_cts_bits(&self, cts: &[u8]) -> Vec<FheBool<FhewBoolEvaluator<R, M>>> {
+        let cts = deserialize_cts_bits(self.ring(), cts);
+        cts.iter()
+            .map(|ct| FheBool::new(&self.evaluator, ct.cloned()))
+            .collect_vec()
     }
 
     pub(crate) fn pk_encrypt_bits(
@@ -453,14 +457,14 @@ mod tests {
         };
         let ct_g = {
             let bytes = clients[0].pk_encrypt_bit(m);
-            let [a, b, c, d]: [FheBool<_>;4] = deserialize_cts_bits(server.ring(), &bytes).try_into().unwrap();
-            serialize_cts_bits(server.ring(), function_bit(&a, &b, &c, &d).into_cts())
+            let [a, b, c, d]: [_; 4] = server.deserialize_cts_bits(&bytes).try_into().unwrap();
+            serialize_cts_bits(server.ring(), &[function_bit(&a, &b, &c, &d).into_ct()])
         };
 
         // Clients generate decryption share of evaluation output
         let ct_g_dec_shares = clients
             .iter()
-            .map(|client| client.decrypt_share_u8(&ct_g))
+            .map(|client| client.decrypt_share_bits(&ct_g))
             .collect_vec();
 
         // Aggregate decryption shares
