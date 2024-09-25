@@ -171,8 +171,23 @@ impl<R: RingOps, M: ModulusOps> Server<R, M> {
         self.evaluator.mod_ks()
     }
 
-    pub(crate) fn aggregate_pk_shares(&mut self, pk_shares: &[SeededRlwePublicKeyOwned<R::Elem>]) {
-        aggregate_pk_shares(self.evaluator.ring(), &mut self.pk, &self.crs, pk_shares);
+    /// Mutate server's public key
+    pub(crate) fn aggregate_pk_shares(&mut self, pk_shares: &[Vec<u8>]) {
+        let deserialized_pk_shares = pk_shares
+            .iter()
+            .map(|bytes| deserialize_pk_share(self.ring(), bytes))
+            .collect_vec();
+        aggregate_pk_shares(
+            self.evaluator.ring(),
+            &mut self.pk,
+            &self.crs,
+            &deserialized_pk_shares,
+        );
+    }
+
+    /// Must be called after aggregate_pk_shares
+    pub(crate) fn serialize_pk(&self) -> Vec<u8> {
+        serialize_pk(self.ring(), &self.pk)
     }
 
     pub(crate) fn aggregate_bs_key_shares<R2: RingOps<Elem = R::Elem>>(
@@ -203,6 +218,11 @@ impl<R: RingOps, M: ModulusOps> Server<R, M> {
         cts.iter()
             .map(|ct| FheBool::new(&self.evaluator, ct.cloned()))
             .collect_vec()
+    }
+
+    pub(crate) fn serialize_cts_bits(&self, cts: &[FheBool<FhewBoolEvaluator<R, M>>]) -> Vec<u8> {
+        let cts = cts.iter().map(|ct| ct.ct().cloned()).collect_vec();
+        serialize_cts_bits(self.ring(), &cts)
     }
 
     pub(crate) fn pk_encrypt_bits(
@@ -387,13 +407,8 @@ mod tests {
             .collect_vec();
 
         // Server aggregates public key shares
-        server.aggregate_pk_shares(
-            &pk_shares
-                .into_iter()
-                .map(|bytes| deserialize_pk_share(server.ring(), &bytes))
-                .collect_vec(),
-        );
-        let pk = serialize_pk(server.ring(), &server.pk);
+        server.aggregate_pk_shares(&pk_shares);
+        let pk = server.serialize_pk();
 
         // Round 2
 
@@ -467,13 +482,8 @@ mod tests {
             .collect_vec();
 
         // Server aggregates public key shares
-        server.aggregate_pk_shares(
-            &pk_shares
-                .into_iter()
-                .map(|bytes| deserialize_pk_share(server.ring(), &bytes))
-                .collect_vec(),
-        );
-        let pk = serialize_pk(server.ring(), &server.pk);
+        server.aggregate_pk_shares(&pk_shares);
+        let pk = server.serialize_pk();
 
         // Round 2
 
@@ -498,7 +508,7 @@ mod tests {
         let ct_g = {
             let bytes = clients[0].pk_encrypt_bit(m);
             let [a, b, c, d] = server.deserialize_cts_bits(&bytes).try_into().unwrap();
-            serialize_cts_bits(server.ring(), &[function_bit(&a, &b, &c, &d).into_ct()])
+            server.serialize_cts_bits(&[function_bit(&a, &b, &c, &d)])
         };
 
         // Clients generate decryption share of evaluation output

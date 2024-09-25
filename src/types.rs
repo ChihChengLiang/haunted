@@ -1,6 +1,6 @@
 use crate::phantom::Server as PhantomServer;
 use itertools::Itertools;
-use phantom_zone_evaluator::boolean::fhew::{param::I_4P, prelude::*};
+use phantom_zone_evaluator::boolean::fhew::prelude::*;
 use rand::rngs::StdRng;
 use rocket::serde::{Deserialize, Serialize};
 use rocket::tokio::sync::Mutex;
