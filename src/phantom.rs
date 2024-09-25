@@ -1,6 +1,6 @@
 use crate::types::ParamCRS;
 use itertools::Itertools;
-use phantom_zone_evaluator::boolean::fhew::prelude::*;
+use phantom_zone_evaluator::boolean::{fhew::prelude::*, FheBool};
 use rand::{rngs::StdRng, RngCore, SeedableRng};
 use serde::{Deserialize, Serialize};
 
@@ -82,18 +82,16 @@ impl<R: RingOps, M: ModulusOps> Client<R, M> {
         serialize_bs_key_share(&self.ring, &self.mod_ks, &bs_key_share)
     }
 
-    pub(crate) fn pk_encrypt_bit(
-        &self,
-        m: impl IntoIterator<Item = bool>,
-    ) -> Vec<FhewBoolCiphertextOwned<R::Elem>> {
-        pk_encrypt_bit(&self.param, &self.ring, &self.pk, m)
+    pub(crate) fn pk_encrypt_bit(&self, m: impl IntoIterator<Item = bool>) -> Vec<u8> {
+        let cts = pk_encrypt_bit(&self.param, &self.ring, &self.pk, m);
+        serialize_cts_bits(&self.ring, &cts)
     }
 
     pub(crate) fn pk_encrypt_u8(&self, m: u8) -> [FhewBoolCiphertextOwned<R::Elem>; 8] {
         pk_encrypt_u8(&self.param, &self.ring, &self.pk, m)
     }
-    pub(crate) fn decrypt_share(&self, ct: &[u8]) -> Vec<u8> {
-        let ct = deserialize_cts(&self.ring, &ct);
+    pub(crate) fn decrypt_share_u8(&self, ct: &[u8]) -> Vec<u8> {
+        let ct = deserialize_cts_u8(&self.ring, &ct);
         let ds: [LweDecryptionShare<R::Elem>; 8] = ct.map(|ct| {
             ct.decrypt_share(
                 &self.ring,
@@ -102,15 +100,42 @@ impl<R: RingOps, M: ModulusOps> Client<R, M> {
                 &mut StdLweRng::from_entropy(),
             )
         });
-        serialize_decryption_share::<R>(&ds)
+        serialize_decryption_share_u8::<R>(&ds)
     }
+
+    pub(crate) fn decrypt_share_bits(&self, ct: &[u8]) -> Vec<u8> {
+        let cbits = deserialize_cts_bits(&self.ring, &ct);
+        let ds = cbits
+            .iter()
+            .map(|cbit| {
+                cbit.decrypt_share(
+                    &self.ring,
+                    self.sk().as_view(),
+                    self.param.noise_distribution,
+                    &mut StdLweRng::from_entropy(),
+                )
+            })
+            .collect_vec();
+        serialize_decryption_share_bits::<R>(&ds)
+    }
+
     pub(crate) fn decrypt_u8(&self, ct: &[u8], dec_shares: &[Vec<u8>]) -> u8 {
-        let ct = deserialize_cts(&self.ring, &ct);
+        let ct = deserialize_cts_u8(&self.ring, &ct);
         let dec_shares = dec_shares
             .iter()
-            .map(|ds| deserialize_decryption_share::<R>(ds))
+            .map(|ds| deserialize_decryption_share_u8::<R>(ds))
             .collect_vec();
-        aggregate_decryption_shares(&self.ring, ct, &dec_shares)
+        aggregate_decryption_shares_u8(&self.ring, ct, &dec_shares)
+    }
+
+    pub(crate) fn decrypt_bits(&self, ct: &[u8], dec_shares: &[Vec<u8>]) -> Vec<bool> {
+        let cbits = deserialize_cts_bits(&self.ring, &ct);
+        // for each client
+        let dec_shares = dec_shares
+            .iter()
+            .map(|ds| deserialize_decryption_share_bits::<R>(ds))
+            .collect_vec();
+        aggregate_decryption_shares_bits(&self.ring, &cbits, &dec_shares)
     }
 }
 
@@ -138,11 +163,11 @@ impl<R: RingOps, M: ModulusOps> Server<R, M> {
         (self.param, self.crs)
     }
 
-    pub(crate) fn ring(&self) -> &R {
+    fn ring(&self) -> &R {
         self.evaluator.ring()
     }
 
-    pub(crate) fn mod_ks(&self) -> &M {
+    fn mod_ks(&self) -> &M {
         self.evaluator.mod_ks()
     }
 
@@ -168,7 +193,14 @@ impl<R: RingOps, M: ModulusOps> Server<R, M> {
         self.evaluator = FhewBoolEvaluator::new(bs_key_prep);
     }
 
-    pub(crate) fn pk_encrypt_bit(
+    pub(crate) fn deserialize_cts_bits(&self, cts: &[u8]) -> Vec<FheBool<FhewBoolEvaluator<R, M>>> {
+        let cts = deserialize_cts_bits(self.ring(), cts);
+        cts.iter()
+            .map(|ct| FheBool::new(&self.evaluator, ct.cloned()))
+            .collect_vec()
+    }
+
+    pub(crate) fn pk_encrypt_bits(
         &self,
         m: impl IntoIterator<Item = bool>,
     ) -> Vec<FhewBoolCiphertextOwned<R::Elem>> {
@@ -206,7 +238,7 @@ fn pk_encrypt_bit<R: RingOps>(
     FhewBoolCiphertext::batched_pk_encrypt(param, ring, pk, m, &mut StdLweRng::from_entropy())
 }
 
-fn aggregate_decryption_shares<R: RingOps>(
+fn aggregate_decryption_shares_u8<R: RingOps>(
     ring: &R,
     ct: [FhewBoolCiphertextOwned<R::Elem>; 8],
     dec_shares: &[[LweDecryptionShare<R::Elem>; 8]],
@@ -218,6 +250,24 @@ fn aggregate_decryption_shares<R: RingOps>(
         })
         .rev()
         .fold(0, |m, b| (m << 1) | b as u8)
+}
+
+fn aggregate_decryption_shares_bits<R: RingOps>(
+    ring: &R,
+    cbits: &[FhewBoolCiphertextOwned<R::Elem>],
+    dec_shares: &[Vec<LweDecryptionShare<R::Elem>>],
+) -> Vec<bool> {
+    cbits
+        .iter()
+        .enumerate()
+        .map(|(bit_idx, cbit)| {
+            let shares = dec_shares
+                .iter()
+                .map(|client_share| client_share[bit_idx])
+                .collect_vec();
+            cbit.aggregate_decryption_shares(ring, &shares)
+        })
+        .collect_vec()
 }
 
 fn serialize_pk_share<R: RingOps>(
@@ -252,11 +302,19 @@ fn serialize_bs_key_share<R: RingOps, M: ModulusOps>(
     bincode::serialize(&bs_key_share.compact(ring, mod_ks)).unwrap()
 }
 
-fn serialize_decryption_share<R: RingOps>(share: &[LweDecryptionShare<R::Elem>; 8]) -> Vec<u8> {
+fn serialize_decryption_share_u8<R: RingOps>(share: &[LweDecryptionShare<R::Elem>; 8]) -> Vec<u8> {
     bincode::serialize(&share).unwrap()
 }
 
-fn deserialize_decryption_share<R: RingOps>(share: &[u8]) -> [LweDecryptionShare<R::Elem>; 8] {
+fn serialize_decryption_share_bits<R: RingOps>(share: &[LweDecryptionShare<R::Elem>]) -> Vec<u8> {
+    bincode::serialize(&share).unwrap()
+}
+
+fn deserialize_decryption_share_u8<R: RingOps>(share: &[u8]) -> [LweDecryptionShare<R::Elem>; 8] {
+    bincode::deserialize(&share).unwrap()
+}
+
+fn deserialize_decryption_share_bits<R: RingOps>(share: &[u8]) -> Vec<LweDecryptionShare<R::Elem>> {
     bincode::deserialize(&share).unwrap()
 }
 
@@ -269,12 +327,25 @@ fn deserialize_bs_key_share<R: RingOps, M: ModulusOps>(
     bs_key_share_compact.uncompact(ring, mod_ks)
 }
 
-fn serialize_cts<R: RingOps>(ring: &R, cts: [FhewBoolCiphertextOwned<R::Elem>; 8]) -> Vec<u8> {
+fn serialize_cts_u8<R: RingOps>(ring: &R, cts: [FhewBoolCiphertextOwned<R::Elem>; 8]) -> Vec<u8> {
     bincode::serialize(&cts.map(|ct| ct.compact(ring))).unwrap()
 }
-fn deserialize_cts<R: RingOps>(ring: &R, bytes: &[u8]) -> [FhewBoolCiphertextOwned<R::Elem>; 8] {
+
+fn serialize_cts_bits<R: RingOps>(ring: &R, cts: &[FhewBoolCiphertextOwned<R::Elem>]) -> Vec<u8> {
+    bincode::serialize(&cts.iter().map(|ct| ct.compact(ring)).collect_vec()).unwrap()
+}
+
+fn deserialize_cts_u8<R: RingOps>(ring: &R, bytes: &[u8]) -> [FhewBoolCiphertextOwned<R::Elem>; 8] {
     let cts: [FhewBoolCiphertext<Compact>; 8] = bincode::deserialize(bytes).unwrap();
     cts.map(|ct| ct.uncompact(ring))
+}
+
+fn deserialize_cts_bits<R: RingOps>(
+    ring: &R,
+    bytes: &[u8],
+) -> Vec<FhewBoolCiphertextOwned<R::Elem>> {
+    let cts: Vec<FhewBoolCiphertext<Compact>> = bincode::deserialize(bytes).unwrap();
+    cts.iter().map(|ct| ct.uncompact(ring)).collect_vec()
 }
 
 #[cfg(test)]
@@ -284,6 +355,7 @@ mod tests {
     use num_traits::NumOps;
     use phantom_zone_evaluator::boolean::fhew::param::I_4P;
     use rand::Rng;
+    use std::ops::{BitAnd, BitOr, BitXor};
 
     fn function<T>(a: &T, b: &T, c: &T, d: &T, e: &T) -> T
     where
@@ -346,16 +418,101 @@ mod tests {
         let ct_g = {
             let [a, b, c, d, e] =
                 &m.map(|m| FheU8::from_cts(&server.evaluator, server.pk_encrypt_u8(m)));
-            serialize_cts(server.ring(), function(a, b, c, d, e).into_cts())
+            serialize_cts_u8(server.ring(), function(a, b, c, d, e).into_cts())
         };
 
         // Clients generate decryption share of evaluation output
         let ct_g_dec_shares = clients
             .iter()
-            .map(|client| client.decrypt_share(&ct_g))
+            .map(|client| client.decrypt_share_u8(&ct_g))
             .collect_vec();
 
         // Aggregate decryption shares
         assert_eq!(g, clients[0].decrypt_u8(&ct_g, &ct_g_dec_shares));
+    }
+    trait BitOps<Rhs = Self, Output = Self>:
+        BitAnd<Rhs, Output = Output> + BitOr<Rhs, Output = Output> + BitXor<Rhs, Output = Output>
+    {
+    }
+
+    impl<T, Rhs, Output> BitOps<Rhs, Output> for T where
+        T: BitAnd<Rhs, Output = Output>
+            + BitOr<Rhs, Output = Output>
+            + BitXor<Rhs, Output = Output>
+    {
+    }
+
+    fn function_bit<T>(a: &T, b: &T, c: &T, d: &T) -> T
+    where
+        T: for<'t> BitOps<&'t T, T>,
+        for<'t> &'t T: BitOps<&'t T, T>,
+    {
+        ((a | b) & c) ^ d
+    }
+    #[test]
+    fn test_phantom_bits() {
+        let mut server = Server::<NoisyPrimeRing, NonNativePowerOfTwo>::new(I_4P);
+        let mut clients = (0..server.param.total_shares)
+            .map(|share_idx| {
+                Client::<PrimeRing, NonNativePowerOfTwo>::new(server.param, server.crs, share_idx)
+            })
+            .collect_vec();
+
+        // Round 1
+
+        // Clients generate public key shares
+        let pk_shares = clients
+            .iter()
+            .map(|client| client.pk_share_gen())
+            .collect_vec();
+
+        // Server aggregates public key shares
+        server.aggregate_pk_shares(
+            &pk_shares
+                .into_iter()
+                .map(|bytes| deserialize_pk_share(server.ring(), &bytes))
+                .collect_vec(),
+        );
+        let pk = serialize_pk(server.ring(), &server.pk);
+
+        // Round 2
+
+        // Clients generate bootstrapping key shares
+        let bs_key_shares = clients
+            .iter_mut()
+            .map(|client| {
+                client.receive_pk(&pk);
+                client.bs_key_share_gen()
+            })
+            .collect_vec();
+
+        // Server aggregates bootstrapping key shares
+        server.aggregate_bs_key_shares::<PrimeRing>(
+            &bs_key_shares
+                .into_iter()
+                .map(|bytes| deserialize_bs_key_share(server.ring(), server.mod_ks(), &bytes))
+                .collect_vec(),
+        );
+
+        // Server performs FHE evaluation
+        let m: [bool; 4] = from_fn(|_| StdRng::from_entropy().gen());
+        let g = {
+            let [a, b, c, d] = &m;
+            function_bit(a, b, c, d)
+        };
+        let ct_g = {
+            let bytes = clients[0].pk_encrypt_bit(m);
+            let [a, b, c, d]: [_; 4] = server.deserialize_cts_bits(&bytes).try_into().unwrap();
+            serialize_cts_bits(server.ring(), &[function_bit(&a, &b, &c, &d).into_ct()])
+        };
+
+        // Clients generate decryption share of evaluation output
+        let ct_g_dec_shares = clients
+            .iter()
+            .map(|client| client.decrypt_share_bits(&ct_g))
+            .collect_vec();
+
+        // Aggregate decryption shares
+        assert_eq!(vec![g], clients[0].decrypt_bits(&ct_g, &ct_g_dec_shares));
     }
 }

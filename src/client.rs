@@ -1,18 +1,11 @@
 use crate::{
     phantom::Client as PhantomClient,
     server::*,
-    types::{
-        AnnotatedDecryptionShare, Decryptable, DecryptionShare, DecryptionShareSubmission,
-        ParamCRS, ServerState, SksSubmission, UserId,
-    },
+    types::{AnnotatedDecryptionShare, Decryptable, DecryptionShareSubmission, ParamCRS, UserId},
 };
-use anyhow::{anyhow, bail, Error};
+use anyhow::{bail, Error};
 use indicatif::{ProgressBar, ProgressStyle};
-use itertools::Itertools;
-use phantom_zone_evaluator::boolean::fhew::prelude::{
-    FhewBoolMpiCrs, FhewBoolMpiParam, NonNativePowerOfTwo, PrimeRing,
-};
-use rand::rngs::StdRng;
+use phantom_zone_evaluator::boolean::fhew::prelude::{NonNativePowerOfTwo, PrimeRing};
 use reqwest::{self, header::CONTENT_TYPE, Client};
 use rocket::{serde::msgpack, uri};
 use serde::{Deserialize, Serialize};
@@ -94,7 +87,7 @@ impl<RQ: Request> SetupWallet<RQ> {
 
     fn generate_decryption_share(&self, decryptable: &Decryptable) -> AnnotatedDecryptionShare {
         // Generate decryption share for the given decryptable
-        let decryption_share = self.pc.decrypt_share(&decryptable.word);
+        let decryption_share = self.pc.decrypt_share_u8(&decryptable.word);
 
         // Create an AnnotatedDecryptionShare with the decryptable's ID and the generated share
         (decryptable.id, decryption_share)
