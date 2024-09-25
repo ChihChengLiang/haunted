@@ -301,16 +301,11 @@ fn serialize_pk_share<R: RingOps>(
 ) -> Vec<u8> {
     bincode::serialize(&pk_share.compact(ring)).unwrap()
 }
-
-pub(crate) fn deserialize_pk_share<R: RingOps>(
-    ring: &R,
-    bytes: &[u8],
-) -> SeededRlwePublicKeyOwned<R::Elem> {
+fn deserialize_pk_share<R: RingOps>(ring: &R, bytes: &[u8]) -> SeededRlwePublicKeyOwned<R::Elem> {
     let pk_share_compact: SeededRlwePublicKey<Compact> = bincode::deserialize(bytes).unwrap();
     pk_share_compact.uncompact(ring)
 }
-
-pub(crate) fn serialize_pk<R: RingOps>(ring: &R, pk: &RlwePublicKeyOwned<R::Elem>) -> Vec<u8> {
+fn serialize_pk<R: RingOps>(ring: &R, pk: &RlwePublicKeyOwned<R::Elem>) -> Vec<u8> {
     bincode::serialize(&pk.compact(ring)).unwrap()
 }
 
