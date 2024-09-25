@@ -177,12 +177,17 @@ impl<R: RingOps, M: ModulusOps> Server<R, M> {
 
     pub(crate) fn aggregate_bs_key_shares<R2: RingOps<Elem = R::Elem>>(
         &mut self,
-        bs_key_shares: &[FhewBoolMpiKeyShareOwned<R::Elem, M::Elem>],
+        bs_key_shares: &[Vec<u8>],
     ) {
+        let bs_key_shares = bs_key_shares
+            .into_iter()
+            .map(|bytes| deserialize_bs_key_share(self.ring(), self.mod_ks(), &bytes))
+            .collect_vec();
+
         let bs_key = {
             let ring = <R2 as RingOps>::new(self.param.modulus, self.param.ring_size);
             let mut bs_key = FhewBoolKey::allocate(*self.param);
-            aggregate_bs_key_shares(&ring, self.mod_ks(), &mut bs_key, &self.crs, bs_key_shares);
+            aggregate_bs_key_shares(&ring, self.mod_ks(), &mut bs_key, &self.crs, &bs_key_shares);
             bs_key
         };
         let bs_key_prep = {
@@ -402,12 +407,7 @@ mod tests {
             .collect_vec();
 
         // Server aggregates bootstrapping key shares
-        server.aggregate_bs_key_shares::<PrimeRing>(
-            &bs_key_shares
-                .into_iter()
-                .map(|bytes| deserialize_bs_key_share(server.ring(), server.mod_ks(), &bytes))
-                .collect_vec(),
-        );
+        server.aggregate_bs_key_shares::<PrimeRing>(&bs_key_shares);
 
         // Server performs FHE evaluation
         let m = from_fn(|_| StdRng::from_entropy().gen());
@@ -487,22 +487,17 @@ mod tests {
             .collect_vec();
 
         // Server aggregates bootstrapping key shares
-        server.aggregate_bs_key_shares::<PrimeRing>(
-            &bs_key_shares
-                .into_iter()
-                .map(|bytes| deserialize_bs_key_share(server.ring(), server.mod_ks(), &bytes))
-                .collect_vec(),
-        );
+        server.aggregate_bs_key_shares::<PrimeRing>(&bs_key_shares);
 
         // Server performs FHE evaluation
-        let m: [bool; 4] = from_fn(|_| StdRng::from_entropy().gen());
+        let m = from_fn(|_| StdRng::from_entropy().gen());
         let g = {
             let [a, b, c, d] = &m;
             function_bit(a, b, c, d)
         };
         let ct_g = {
             let bytes = clients[0].pk_encrypt_bit(m);
-            let [a, b, c, d]: [_; 4] = server.deserialize_cts_bits(&bytes).try_into().unwrap();
+            let [a, b, c, d] = server.deserialize_cts_bits(&bytes).try_into().unwrap();
             serialize_cts_bits(server.ring(), &[function_bit(&a, &b, &c, &d).into_ct()])
         };
 
