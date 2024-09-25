@@ -1,18 +1,11 @@
 use crate::{
     phantom::Client as PhantomClient,
     server::*,
-    types::{
-        AnnotatedDecryptionShare, Decryptable, DecryptionShare, DecryptionShareSubmission,
-        ParamCRS, ServerState, SksSubmission, UserId,
-    },
+    types::{AnnotatedDecryptionShare, Decryptable, DecryptionShareSubmission, ParamCRS, UserId},
 };
-use anyhow::{anyhow, bail, Error};
+use anyhow::{bail, Error};
 use indicatif::{ProgressBar, ProgressStyle};
-use itertools::Itertools;
-use phantom_zone_evaluator::boolean::fhew::prelude::{
-    FhewBoolMpiCrs, FhewBoolMpiParam, NonNativePowerOfTwo, PrimeRing,
-};
-use rand::rngs::StdRng;
+use phantom_zone_evaluator::boolean::fhew::prelude::{NonNativePowerOfTwo, PrimeRing};
 use reqwest::{self, header::CONTENT_TYPE, Client};
 use rocket::{serde::msgpack, uri};
 use serde::{Deserialize, Serialize};

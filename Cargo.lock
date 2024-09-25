@@ -1153,7 +1153,7 @@ checksum = "e3148f5046208a5d56bcfc03053e3ca6334e51da8dfb19b6cdc8b306fae3283e"
 [[package]]
 name = "phantom-zone-crypto"
 version = "0.1.0"
-source = "git+https://github.com/gausslabs/phantom-zone?rev=34d4af46697717cd7039de1c91892916af5e9e21#34d4af46697717cd7039de1c91892916af5e9e21"
+source = "git+https://github.com/gausslabs/phantom-zone?rev=5232e55bfa811487438c34f745cf830b9b1f22d9#5232e55bfa811487438c34f745cf830b9b1f22d9"
 dependencies = [
  "itertools",
  "num-traits",
@@ -1166,7 +1166,7 @@ dependencies = [
 [[package]]
 name = "phantom-zone-derive"
 version = "0.1.0"
-source = "git+https://github.com/gausslabs/phantom-zone?rev=34d4af46697717cd7039de1c91892916af5e9e21#34d4af46697717cd7039de1c91892916af5e9e21"
+source = "git+https://github.com/gausslabs/phantom-zone?rev=5232e55bfa811487438c34f745cf830b9b1f22d9#5232e55bfa811487438c34f745cf830b9b1f22d9"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1176,7 +1176,7 @@ dependencies = [
 [[package]]
 name = "phantom-zone-evaluator"
 version = "0.1.0"
-source = "git+https://github.com/gausslabs/phantom-zone?rev=34d4af46697717cd7039de1c91892916af5e9e21#34d4af46697717cd7039de1c91892916af5e9e21"
+source = "git+https://github.com/gausslabs/phantom-zone?rev=5232e55bfa811487438c34f745cf830b9b1f22d9#5232e55bfa811487438c34f745cf830b9b1f22d9"
 dependencies = [
  "itertools",
  "paste",
@@ -1190,7 +1190,7 @@ dependencies = [
 [[package]]
 name = "phantom-zone-math"
 version = "0.1.0"
-source = "git+https://github.com/gausslabs/phantom-zone?rev=34d4af46697717cd7039de1c91892916af5e9e21#34d4af46697717cd7039de1c91892916af5e9e21"
+source = "git+https://github.com/gausslabs/phantom-zone?rev=5232e55bfa811487438c34f745cf830b9b1f22d9#5232e55bfa811487438c34f745cf830b9b1f22d9"
 dependencies = [
  "bincode",
  "itertools",
