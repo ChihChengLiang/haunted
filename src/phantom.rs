@@ -171,18 +171,38 @@ impl<R: RingOps, M: ModulusOps> Server<R, M> {
         self.evaluator.mod_ks()
     }
 
-    pub(crate) fn aggregate_pk_shares(&mut self, pk_shares: &[SeededRlwePublicKeyOwned<R::Elem>]) {
-        aggregate_pk_shares(self.evaluator.ring(), &mut self.pk, &self.crs, pk_shares);
+    /// Mutate server's public key
+    pub(crate) fn aggregate_pk_shares(&mut self, pk_shares: &[Vec<u8>]) {
+        let deserialized_pk_shares = pk_shares
+            .iter()
+            .map(|bytes| deserialize_pk_share(self.ring(), bytes))
+            .collect_vec();
+        aggregate_pk_shares(
+            self.evaluator.ring(),
+            &mut self.pk,
+            &self.crs,
+            &deserialized_pk_shares,
+        );
+    }
+
+    /// Must be called after aggregate_pk_shares
+    pub(crate) fn serialize_pk(&self) -> Vec<u8> {
+        serialize_pk(self.ring(), &self.pk)
     }
 
     pub(crate) fn aggregate_bs_key_shares<R2: RingOps<Elem = R::Elem>>(
         &mut self,
-        bs_key_shares: &[FhewBoolMpiKeyShareOwned<R::Elem, M::Elem>],
+        bs_key_shares: &[Vec<u8>],
     ) {
+        let bs_key_shares = bs_key_shares
+            .into_iter()
+            .map(|bytes| deserialize_bs_key_share(self.ring(), self.mod_ks(), &bytes))
+            .collect_vec();
+
         let bs_key = {
             let ring = <R2 as RingOps>::new(self.param.modulus, self.param.ring_size);
             let mut bs_key = FhewBoolKey::allocate(*self.param);
-            aggregate_bs_key_shares(&ring, self.mod_ks(), &mut bs_key, &self.crs, bs_key_shares);
+            aggregate_bs_key_shares(&ring, self.mod_ks(), &mut bs_key, &self.crs, &bs_key_shares);
             bs_key
         };
         let bs_key_prep = {
@@ -198,6 +218,11 @@ impl<R: RingOps, M: ModulusOps> Server<R, M> {
         cts.iter()
             .map(|ct| FheBool::new(&self.evaluator, ct.cloned()))
             .collect_vec()
+    }
+
+    pub(crate) fn serialize_cts_bits(&self, cts: &[FheBool<FhewBoolEvaluator<R, M>>]) -> Vec<u8> {
+        let cts = cts.iter().map(|ct| ct.ct().cloned()).collect_vec();
+        serialize_cts_bits(self.ring(), &cts)
     }
 
     pub(crate) fn pk_encrypt_bits(
@@ -276,16 +301,11 @@ fn serialize_pk_share<R: RingOps>(
 ) -> Vec<u8> {
     bincode::serialize(&pk_share.compact(ring)).unwrap()
 }
-
-pub(crate) fn deserialize_pk_share<R: RingOps>(
-    ring: &R,
-    bytes: &[u8],
-) -> SeededRlwePublicKeyOwned<R::Elem> {
+fn deserialize_pk_share<R: RingOps>(ring: &R, bytes: &[u8]) -> SeededRlwePublicKeyOwned<R::Elem> {
     let pk_share_compact: SeededRlwePublicKey<Compact> = bincode::deserialize(bytes).unwrap();
     pk_share_compact.uncompact(ring)
 }
-
-pub(crate) fn serialize_pk<R: RingOps>(ring: &R, pk: &RlwePublicKeyOwned<R::Elem>) -> Vec<u8> {
+fn serialize_pk<R: RingOps>(ring: &R, pk: &RlwePublicKeyOwned<R::Elem>) -> Vec<u8> {
     bincode::serialize(&pk.compact(ring)).unwrap()
 }
 
@@ -382,13 +402,8 @@ mod tests {
             .collect_vec();
 
         // Server aggregates public key shares
-        server.aggregate_pk_shares(
-            &pk_shares
-                .into_iter()
-                .map(|bytes| deserialize_pk_share(server.ring(), &bytes))
-                .collect_vec(),
-        );
-        let pk = serialize_pk(server.ring(), &server.pk);
+        server.aggregate_pk_shares(&pk_shares);
+        let pk = server.serialize_pk();
 
         // Round 2
 
@@ -402,12 +417,7 @@ mod tests {
             .collect_vec();
 
         // Server aggregates bootstrapping key shares
-        server.aggregate_bs_key_shares::<PrimeRing>(
-            &bs_key_shares
-                .into_iter()
-                .map(|bytes| deserialize_bs_key_share(server.ring(), server.mod_ks(), &bytes))
-                .collect_vec(),
-        );
+        server.aggregate_bs_key_shares::<PrimeRing>(&bs_key_shares);
 
         // Server performs FHE evaluation
         let m = from_fn(|_| StdRng::from_entropy().gen());
@@ -467,13 +477,8 @@ mod tests {
             .collect_vec();
 
         // Server aggregates public key shares
-        server.aggregate_pk_shares(
-            &pk_shares
-                .into_iter()
-                .map(|bytes| deserialize_pk_share(server.ring(), &bytes))
-                .collect_vec(),
-        );
-        let pk = serialize_pk(server.ring(), &server.pk);
+        server.aggregate_pk_shares(&pk_shares);
+        let pk = server.serialize_pk();
 
         // Round 2
 
@@ -487,23 +492,18 @@ mod tests {
             .collect_vec();
 
         // Server aggregates bootstrapping key shares
-        server.aggregate_bs_key_shares::<PrimeRing>(
-            &bs_key_shares
-                .into_iter()
-                .map(|bytes| deserialize_bs_key_share(server.ring(), server.mod_ks(), &bytes))
-                .collect_vec(),
-        );
+        server.aggregate_bs_key_shares::<PrimeRing>(&bs_key_shares);
 
         // Server performs FHE evaluation
-        let m: [bool; 4] = from_fn(|_| StdRng::from_entropy().gen());
+        let m = from_fn(|_| StdRng::from_entropy().gen());
         let g = {
             let [a, b, c, d] = &m;
             function_bit(a, b, c, d)
         };
         let ct_g = {
             let bytes = clients[0].pk_encrypt_bit(m);
-            let [a, b, c, d]: [_; 4] = server.deserialize_cts_bits(&bytes).try_into().unwrap();
-            serialize_cts_bits(server.ring(), &[function_bit(&a, &b, &c, &d).into_ct()])
+            let [a, b, c, d] = server.deserialize_cts_bits(&bytes).try_into().unwrap();
+            server.serialize_cts_bits(&[function_bit(&a, &b, &c, &d)])
         };
 
         // Clients generate decryption share of evaluation output

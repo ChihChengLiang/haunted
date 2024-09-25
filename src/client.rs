@@ -10,18 +10,17 @@ use reqwest::{self, header::CONTENT_TYPE, Client};
 use rocket::{serde::msgpack, uri};
 use serde::{Deserialize, Serialize};
 use std::{
-    future::Future,
     pin::Pin,
     task::{Context, Poll},
 };
 use tokio::io::AsyncRead;
 use tokio_util::io::ReaderStream;
 
-pub struct Wallet<RQ: Request> {
-    pub(crate) rc: RQ,
+pub struct Wallet {
+    pub(crate) rc: ProductionClient,
 }
 
-impl Wallet<ProductionClient> {
+impl Wallet {
     pub fn new(url: &str) -> Self {
         Self {
             rc: ProductionClient::new(url),
@@ -29,13 +28,13 @@ impl Wallet<ProductionClient> {
     }
 }
 
-impl<RQ: Request + Clone> Wallet<RQ> {
+impl Wallet {
     async fn get_param_crs(&self) -> Result<ParamCRS, Error> {
         self.rc.get(&uri!(get_param).to_string()).await
     }
 
     async fn register(&self) -> Result<UserId, Error> {
-        self.rc.post_nobody("/register").await
+        self.rc.post_nobody(&uri!(register).to_string()).await
     }
 
     async fn acquire_pk(
@@ -57,7 +56,7 @@ impl<RQ: Request + Clone> Wallet<RQ> {
     /// Complete the flow to derive server key shares
     ///
     /// Wait actions from other users
-    pub async fn run_setup(&self) -> Result<SetupWallet<RQ>, Error> {
+    pub async fn run_setup(&self) -> Result<SetupWallet, Error> {
         let (param, crs) = self.get_param_crs().await?;
         let user_id = self.register().await?;
         let mut pc = PhantomClient::<PrimeRing, NonNativePowerOfTwo>::new(param, crs, user_id);
@@ -72,13 +71,13 @@ impl<RQ: Request + Clone> Wallet<RQ> {
     }
 }
 
-pub struct SetupWallet<RQ: Request> {
-    rc: RQ,
+pub struct SetupWallet {
+    rc: ProductionClient,
     user_id: UserId,
     pc: PhantomClient<PrimeRing, NonNativePowerOfTwo>,
 }
 
-impl<RQ: Request> SetupWallet<RQ> {
+impl SetupWallet {
     async fn listen_for_decryptables(&self) -> Result<Vec<Decryptable>, Error> {
         // Poll the server for new decryptables
         let decryptables: Vec<Decryptable> = self.rc.get("/decryptables").await?;
@@ -132,29 +131,6 @@ impl<RQ: Request> SetupWallet<RQ> {
     }
 }
 
-pub trait Request {
-    fn get<T: Send + for<'de> Deserialize<'de> + 'static>(
-        &self,
-        path: &str,
-    ) -> impl Future<Output = Result<T, Error>>;
-    fn post_nobody<T: Send + for<'de> Deserialize<'de> + 'static>(
-        &self,
-        path: &str,
-    ) -> impl Future<Output = Result<T, Error>>;
-
-    fn post<T: Send + for<'de> Deserialize<'de> + 'static>(
-        &self,
-        path: &str,
-        body: Vec<u8>,
-    ) -> impl Future<Output = Result<T, Error>>;
-
-    fn post_msgpack<T: Send + for<'de> Deserialize<'de> + 'static>(
-        &self,
-        path: &str,
-        body: &impl Serialize,
-    ) -> impl Future<Output = Result<T, Error>>;
-}
-
 #[derive(Debug, Clone)]
 pub struct ProductionClient {
     url: String,
@@ -184,59 +160,48 @@ impl ProductionClient {
             }
         }
     }
-}
 
-impl Request for ProductionClient {
-    fn get<T: Send + for<'de> Deserialize<'de> + 'static>(
+    async fn get<T: Send + for<'de> Deserialize<'de> + 'static>(
         &self,
         path: &str,
-    ) -> impl Future<Output = Result<T, Error>> {
-        async {
-            let response = self.client.get(self.path(path)).send().await?;
-            Self::handle_response(response).await
-        }
+    ) -> Result<T, Error> {
+        let response = self.client.get(self.path(path)).send().await?;
+        Self::handle_response(response).await
     }
 
-    fn post_nobody<T: Send + for<'de> Deserialize<'de> + 'static>(
+    async fn post_nobody<T: Send + for<'de> Deserialize<'de> + 'static>(
         &self,
         path: &str,
-    ) -> impl Future<Output = Result<T, Error>> {
-        async {
-            let response = self.client.post(self.path(path)).send().await?;
-            Self::handle_response(response).await
-        }
+    ) -> Result<T, Error> {
+        let response = self.client.post(self.path(path)).send().await?;
+        Self::handle_response(response).await
     }
 
-    fn post<T: Send + for<'de> Deserialize<'de> + 'static>(
+    async fn post<T: Send + for<'de> Deserialize<'de> + 'static>(
         &self,
         path: &str,
         body: Vec<u8>,
-    ) -> impl Future<Output = Result<T, Error>> {
-        async {
-            let response = self.client.post(self.path(path)).body(body).send().await?;
-            Self::handle_response(response).await
-        }
+    ) -> Result<T, Error> {
+        let response = self.client.post(self.path(path)).body(body).send().await?;
+        Self::handle_response(response).await
     }
-
-    fn post_msgpack<T: Send + for<'de> Deserialize<'de> + 'static>(
+    async fn post_msgpack<T: Send + for<'de> Deserialize<'de> + 'static>(
         &self,
         path: &str,
         body: &impl Serialize,
-    ) -> impl Future<Output = Result<T, Error>> {
-        async {
-            let body = msgpack::to_compact_vec(body)?;
-            let reader = ProgressReader::new(&body, 128 * 1024);
-            let stream = ReaderStream::new(reader);
+    ) -> Result<T, Error> {
+        let body = msgpack::to_compact_vec(body)?;
+        let reader = ProgressReader::new(&body, 128 * 1024);
+        let stream = ReaderStream::new(reader);
 
-            let response = self
-                .client
-                .post(self.path(path))
-                .header(CONTENT_TYPE, "application/msgpack")
-                .body(reqwest::Body::wrap_stream(stream))
-                .send()
-                .await?;
-            Self::handle_response(response).await
-        }
+        let response = self
+            .client
+            .post(self.path(path))
+            .header(CONTENT_TYPE, "application/msgpack")
+            .body(reqwest::Body::wrap_stream(stream))
+            .send()
+            .await?;
+        Self::handle_response(response).await
     }
 }
 
