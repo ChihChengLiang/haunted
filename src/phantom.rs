@@ -33,6 +33,10 @@ impl<R: RingOps, M: ModulusOps> Client<R, M> {
         }
     }
 
+    pub(crate) fn get_share_idx(&self) -> usize {
+        self.share_idx
+    }
+
     pub(crate) fn sk(&self) -> RlweSecretKeyOwned<i64> {
         RlweSecretKey::sample(
             self.param.ring_size,

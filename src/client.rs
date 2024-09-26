@@ -1,8 +1,12 @@
 use crate::{
     phantom::Client as PhantomClient,
     server::*,
-    types::{AnnotatedDecryptionShare, Decryptable, DecryptionShareSubmission, ParamCRS, UserId},
+    types::{
+        AnnotatedDecryptionShare, Decryptable, DecryptionShareSubmission, ParamCRS,
+        PkShareSubmission, UserId,
+    },
 };
+
 use anyhow::{bail, Error};
 use indicatif::{ProgressBar, ProgressStyle};
 use phantom_zone_evaluator::boolean::fhew::prelude::{NonNativePowerOfTwo, PrimeRing};
@@ -44,9 +48,30 @@ impl Wallet {
         pc: &mut PhantomClient<PrimeRing, NonNativePowerOfTwo>,
     ) -> Result<Vec<u8>, Error> {
         let pk_share = pc.pk_share_gen();
-        let server_pk = vec![];
-        pc.receive_pk(&server_pk);
-        Ok(vec![])
+        // Submit the public key share
+        self.rc
+            .post_msgpack(
+                &uri!(submit_pk_shares).to_string(),
+                &PkShareSubmission {
+                    user_id: pc.get_share_idx(),
+                    pk_share,
+                },
+            )
+            .await?;
+        for _ in 0..10 {
+            let result: Result<Vec<u8>, _> =
+                self.rc.get(&uri!(get_aggregated_pk).to_string()).await;
+            match result {
+                Ok(server_pk) => {
+                    pc.receive_pk(&server_pk);
+                    return Ok(server_pk);
+                }
+                Err(_) => {
+                    sleep(Duration::from_millis(100)).await;
+                }
+            }
+        }
+        bail!("Failed to get aggregated public key".to_string());
     }
 
     async fn submit_bs_key_share(&self, bs_key_share: Vec<u8>) -> Result<UserId, Error> {
@@ -255,24 +280,5 @@ impl AsyncRead for ProgressReader {
         }
 
         Poll::Ready(Ok(()))
-    }
-}
-
-async fn poll<F, T, E>(callback: F, timeout: Duration) -> Result<T, Error>
-where
-    F: Fn() -> Result<T, E>,
-    E: std::error::Error + Send + Sync + 'static,
-{
-    let start = Instant::now();
-    loop {
-        match callback() {
-            Ok(result) => return Ok(result),
-            Err(_) => {
-                if start.elapsed() >= timeout {
-                    return Err(Error::msg("Operation timed out"));
-                }
-                sleep(Duration::from_millis(100)).await;
-            }
-        }
     }
 }
