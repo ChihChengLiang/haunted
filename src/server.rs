@@ -1,6 +1,6 @@
 use crate::types::{
     AnnotatedDecryptionShare, DecryptionShareSubmission, Error, ErrorResponse, MutexServerStorage,
-    ParamCRS, ServerState, ServerStorage, SksSubmission, UserId, UserStorage,
+    ParamCRS, PkShareSubmission, ServerState, ServerStorage, SksSubmission, UserId, UserStorage,
 };
 
 use phantom_zone_evaluator::boolean::fhew::param::I_4P;
@@ -25,6 +25,29 @@ async fn register(ss: &State<MutexServerStorage>) -> Result<Json<usize>, ErrorRe
 }
 
 async fn setup_status() -> () {}
+
+/// The user submits Public Key shares
+#[post("/submit_pk_shares", data = "<submission>", format = "msgpack")]
+async fn submit_pk_shares(
+    submission: MsgPack<PkShareSubmission>,
+    ss: &State<MutexServerStorage>,
+) -> Result<Json<UserId>, ErrorResponse> {
+    let mut ss = ss.lock().await;
+
+    ss.ensure(ServerState::ReadyForPkShares)?;
+
+    let PkShareSubmission { user_id, pk_share } = submission.0;
+
+    let user = ss.get_user(user_id)?;
+    user.storage = UserStorage::PkShare(pk_share);
+
+    if ss.check_pk_share_submission() {
+        ss.aggregate_pk_shares()?;
+        ss.transit(ServerState::ReadyForBskShares);
+    }
+
+    Ok(Json(user_id))
+}
 
 /// The user submits Server key shares
 #[post("/submit_bsks", data = "<submission>", format = "msgpack")]

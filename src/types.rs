@@ -59,7 +59,10 @@ impl From<Error> for ErrorResponse {
 pub enum ServerState {
     /// Users are allowed to join the computation
     ReadyForJoining,
-    /// The number of user is determined now.
+    /// Ready for public key shares
+    ReadyForPkShares,
+    /// Ready for bootstrap key shares
+    ReadyForBskShares,
     /// We can now accept ciphertexts, which depends on the number of users.
     ReadyForInputs,
     ReadyForRunning,
@@ -144,6 +147,25 @@ impl ServerStorage {
             .ok_or(Error::UnregisteredUser { user_id })
     }
 
+    pub(crate) fn check_pk_share_submission(&self) -> bool {
+        self.users
+            .iter()
+            .all(|user| matches!(user.storage, UserStorage::PkShare(..)))
+    }
+
+    pub(crate) fn aggregate_pk_shares(&mut self) -> Result<(), Error> {
+        let mut pk_shares = Vec::new();
+        for (user_id, user) in self.users.iter().enumerate() {
+            if let UserStorage::PkShare(pk_share) = &user.storage {
+                pk_shares.push(pk_share.clone());
+            } else {
+                return Err(Error::CipherNotFound { user_id });
+            }
+        }
+        self.ps.aggregate_pk_shares(&pk_shares);
+        Ok(())
+    }
+
     pub(crate) fn check_cipher_submission(&self) -> bool {
         self.users
             .iter()
@@ -173,6 +195,7 @@ pub(crate) struct UserRecord {
 #[derive(Debug, Clone)]
 pub(crate) enum UserStorage {
     Empty,
+    PkShare(Vec<u8>),
     Sks(Box<ServerKeyShare>),
     DecryptionShare(Option<Vec<AnnotatedDecryptionShare>>),
 }
@@ -197,6 +220,13 @@ impl UserStorage {
 
 /// ([`Word`] index, user_id) -> decryption share
 pub type DecryptionSharesMap = HashMap<(usize, UserId), DecryptionShare>;
+
+#[derive(Serialize, Deserialize)]
+#[serde(crate = "rocket::serde")]
+pub(crate) struct PkShareSubmission {
+    pub(crate) user_id: UserId,
+    pub(crate) pk_share: Vec<u8>,
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(crate = "rocket::serde")]

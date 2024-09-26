@@ -9,11 +9,13 @@ use phantom_zone_evaluator::boolean::fhew::prelude::{NonNativePowerOfTwo, PrimeR
 use reqwest::{self, header::CONTENT_TYPE, Client};
 use rocket::{serde::msgpack, uri};
 use serde::{Deserialize, Serialize};
+use std::time::{Duration, Instant};
 use std::{
     pin::Pin,
     task::{Context, Poll},
 };
 use tokio::io::AsyncRead;
+use tokio::time::sleep;
 use tokio_util::io::ReaderStream;
 
 pub struct Wallet {
@@ -253,5 +255,24 @@ impl AsyncRead for ProgressReader {
         }
 
         Poll::Ready(Ok(()))
+    }
+}
+
+async fn poll<F, T, E>(callback: F, timeout: Duration) -> Result<T, Error>
+where
+    F: Fn() -> Result<T, E>,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    let start = Instant::now();
+    loop {
+        match callback() {
+            Ok(result) => return Ok(result),
+            Err(_) => {
+                if start.elapsed() >= timeout {
+                    return Err(Error::msg("Operation timed out"));
+                }
+                sleep(Duration::from_millis(100)).await;
+            }
+        }
     }
 }
