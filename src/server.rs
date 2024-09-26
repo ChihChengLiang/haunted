@@ -1,6 +1,7 @@
 use crate::types::{
-    AnnotatedDecryptionShare, DecryptionShareSubmission, Error, ErrorResponse, MutexServerStorage,
-    ParamCRS, PkShareSubmission, ServerState, ServerStorage, SksSubmission, UserId, UserStorage,
+    AnnotatedDecryptionShare, BskShareSubmission, DecryptionShareSubmission, Error, ErrorResponse,
+    MutexServerStorage, ParamCRS, PkShareSubmission, ServerState, ServerStorage, UserId,
+    UserStorage,
 };
 
 use phantom_zone_evaluator::boolean::fhew::param::I_4P;
@@ -65,36 +66,22 @@ async fn get_aggregated_pk(ss: &State<MutexServerStorage>) -> Result<Json<Vec<u8
 /// The user submits Server key shares
 #[post("/submit_bsks", data = "<submission>", format = "msgpack")]
 async fn submit_bsks(
-    submission: MsgPack<SksSubmission>,
+    submission: MsgPack<BskShareSubmission>,
     ss: &State<MutexServerStorage>,
 ) -> Result<Json<UserId>, ErrorResponse> {
     let mut ss = ss.lock().await;
 
-    ss.ensure(ServerState::ReadyForInputs)?;
+    ss.ensure(ServerState::ReadyForBskShares)?;
 
-    let SksSubmission { user_id, sks } = submission.0;
+    let BskShareSubmission { user_id, bsk_share } = submission.0;
 
     let user = ss.get_user(user_id)?;
-    user.storage = UserStorage::Sks(Box::new(sks));
+    user.storage = UserStorage::BskShare(Box::new(bsk_share));
 
-    if ss.check_cipher_submission() {
+    if ss.check_bsk_share_submission() {
         ss.transit(ServerState::ReadyForInputs);
-        let server_key_shares = ss.get_sks()?;
-
-        tokio::task::spawn_blocking(move || {
-            rayon::ThreadPoolBuilder::new()
-                .build_scoped(
-                    // Initialize thread-local storage parameters
-                    |thread| thread.run(),
-                    // Run parallel code under this pool
-                    |pool| {
-                        pool.install(|| {
-                            println!("Derive server key");
-                        })
-                    },
-                )
-                .unwrap();
-        });
+        println!("Derive bootstrap key");
+        ss.aggregate_bsk_shares()?;
     }
 
     Ok(Json(user_id))
