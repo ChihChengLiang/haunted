@@ -49,6 +49,19 @@ async fn submit_pk_shares(
     Ok(Json(user_id))
 }
 
+/// The user acquires the aggregated public key
+#[get("/get_aggregated_pk")]
+async fn get_aggregated_pk(ss: &State<MutexServerStorage>) -> Result<Json<Vec<u8>>, ErrorResponse> {
+    let ss = ss.lock().await;
+
+    ss.ensure(ServerState::ReadyForBskShares)?;
+
+    // Serialize the aggregated public key
+    let aggregated_pk = ss.ps.serialize_pk();
+
+    Ok(Json(aggregated_pk))
+}
+
 /// The user submits Server key shares
 #[post("/submit_bsks", data = "<submission>", format = "msgpack")]
 async fn submit_bsks(
@@ -135,6 +148,8 @@ pub fn rocket() -> Rocket<Build> {
             routes![
                 get_param,
                 register,
+                submit_pk_shares,
+                get_aggregated_pk,
                 submit_bsks,
                 submit_decryption_shares,
                 get_decryption_share,
