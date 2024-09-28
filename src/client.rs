@@ -191,6 +191,14 @@ impl SetupWallet {
             .await?;
         Ok(())
     }
+
+    pub async fn get_computation_result(&self) -> Result<Option<Vec<Cipher>>, Error> {
+        match self.rc.get::<Vec<Cipher>>("/computation_result").await {
+            Ok(result) => Ok(Some(result)),
+            Err(e) if e.to_string().contains("not ready") => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

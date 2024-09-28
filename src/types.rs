@@ -1,6 +1,7 @@
 use crate::phantom::Server as PhantomServer;
 use itertools::Itertools;
 use phantom_zone_evaluator::boolean::fhew::prelude::*;
+use phantom_zone_evaluator::boolean::FheBool;
 use rand::rngs::StdRng;
 use rocket::serde::{Deserialize, Serialize};
 use rocket::tokio::sync::Mutex;
@@ -72,9 +73,6 @@ pub enum ServerState {
     ReadyForBskShares,
     /// We can now accept ciphertexts
     ReadyForInputs,
-    ReadyForRunning,
-    RunningFhe,
-    CompletedFhe,
 }
 
 impl ServerState {
@@ -203,7 +201,7 @@ impl ServerStorage {
         Ok(bsk_shares)
     }
 
-    pub(crate) fn submit_cipher(&mut self, user_id: UserId, cipher: Cipher) -> Result<(), Error> {
+    pub(crate) fn accept_cipher(&mut self, user_id: UserId, cipher: Cipher) -> Result<(), Error> {
         self.cipher_queues.get_mut(user_id).ok_or(Error::UnregisteredUser { user_id })?.push_back(cipher);
         Ok(())
     }

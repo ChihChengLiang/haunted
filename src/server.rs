@@ -1,7 +1,8 @@
+use crate::phantom::Server as PhantomServer;
 use crate::types::{
-    AnnotatedDecryptionShare, BskShareSubmission, CipherSubmission, DecryptionShareSubmission,
-    Error, ErrorResponse, MutexServerStorage, ParamCRS, PkShareSubmission, ServerState,
-    ServerStorage, UserId, UserStorage,
+    AnnotatedDecryptionShare, BskShareSubmission, Cipher, CipherSubmission,
+    DecryptionShareSubmission, Error, ErrorResponse, MutexServerStorage, ParamCRS,
+    PkShareSubmission, ServerState, ServerStorage, UserId, UserStorage,
 };
 
 use phantom_zone_evaluator::boolean::fhew::param::I_4P;
@@ -9,7 +10,10 @@ use rocket::serde::json::Json;
 use rocket::serde::msgpack::MsgPack;
 use rocket::{get, post, routes};
 use rocket::{Build, Rocket, State};
+use std::sync::Arc;
+use tokio::sync::mpsc;
 use tokio::sync::Mutex;
+use tokio::task;
 
 #[get("/param")]
 pub(crate) async fn get_param(ss: &State<MutexServerStorage>) -> Json<ParamCRS> {
@@ -137,6 +141,7 @@ async fn get_decryption_share(
 async fn submit_cipher(
     submission: MsgPack<CipherSubmission>,
     ss: &State<MutexServerStorage>,
+    channels: &State<Arc<ComputationChannels>>,
 ) -> Result<Json<()>, ErrorResponse> {
     let mut ss = ss.lock().await;
 
@@ -144,24 +149,81 @@ async fn submit_cipher(
 
     let CipherSubmission { user_id, cipher } = submission.0;
 
-    ss.submit_cipher(user_id, cipher)?;
+    ss.accept_cipher(user_id, cipher)?;
 
     if ss.is_ready_for_computation() {
-        // Trigger computation
         let ciphers = ss.get_ciphers_for_computation();
-        // TODO: Perform actual computation with ciphers
         println!("Starting computation with {} ciphers", ciphers.len());
+
+        // Send ciphers to the background computation task
+        if let Err(e) = channels.input_sender.send(ciphers).await {
+            eprintln!("Failed to send ciphers for computation: {}", e);
+            return Err(ErrorResponse::internal_error());
+        }
     }
 
     Ok(Json(()))
 }
 
+pub struct ComputationChannels {
+    input_sender: mpsc::Sender<Vec<Cipher>>,
+    output_receiver: mpsc::Receiver<Vec<Cipher>>,
+}
+
+async fn background_computation(
+    mut input_receiver: mpsc::Receiver<Vec<Cipher>>,
+    output_sender: mpsc::Sender<Vec<Cipher>>,
+    pc: PhantomServer,
+) {
+    while let Some(ciphers) = input_receiver.recv().await {
+        // Perform the FHE computation here
+        println!("Performing computation on {} ciphers", ciphers.len());
+
+        // TODO: Implement actual FHE computation
+        // For now, we'll just simulate a computation by waiting and returning the input
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+        let result = ciphers;
+
+        // Send the result
+        if let Err(e) = output_sender.send(result).await {
+            eprintln!("Failed to send computation result: {}", e);
+        }
+    }
+}
+
+#[get("/computation_result")]
+async fn get_computation_result(
+    channels: &State<Arc<ComputationChannels>>,
+) -> Result<Json<Vec<Cipher>>, ErrorResponse> {
+    match channels.output_receiver.try_recv() {
+        Ok(result) => Ok(Json(result)),
+        Err(mpsc::error::TryRecvError::Empty) => Err(ErrorResponse::not_ready()),
+        Err(_) => Err(ErrorResponse::internal_error()),
+    }
+}
+
 pub fn rocket(n_users: usize) -> Rocket<Build> {
     let param = I_4P;
+    let (input_sender, input_receiver) = mpsc::channel(100);
+    let (output_sender, output_receiver) = mpsc::channel(100);
+
+    let computation_channels = ComputationChannels {
+        input_sender,
+        output_receiver,
+    };
+
+    // Spawn the background computation task
+    task::spawn(background_computation(
+        input_receiver,
+        output_sender,
+        param.clone(),
+    ));
+
     rocket::build()
         .manage(MutexServerStorage::new(Mutex::new(ServerStorage::new(
             param, n_users,
         ))))
+        .manage(Arc::new(computation_channels))
         .mount(
             "/",
             routes![
@@ -174,6 +236,7 @@ pub fn rocket(n_users: usize) -> Rocket<Build> {
                 submit_decryption_shares,
                 get_decryption_share,
                 submit_cipher,
+                get_computation_result,
             ],
         )
 }
