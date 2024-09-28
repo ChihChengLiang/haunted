@@ -3,7 +3,7 @@ use crate::{
     server::*,
     types::{
         AnnotatedDecryptionShare, Decryptable, DecryptionShareSubmission, ParamCRS,
-        PkShareSubmission, UserId,
+        PkShareSubmission, ServerState, UserId,
     },
 };
 
@@ -41,6 +41,48 @@ impl Wallet {
 
     async fn register(&self) -> Result<UserId, Error> {
         self.rc.post_nobody(&uri!(register).to_string()).await
+    }
+
+    async fn poll_server_status(&self) -> Result<ServerState, Error> {
+        let mut attempts = 0;
+        const MAX_ATTEMPTS: u32 = 30;
+        const DELAY_MS: u64 = 1000;
+
+        while attempts < MAX_ATTEMPTS {
+            match self
+                .rc
+                .get::<ServerState>(&uri!(get_status).to_string())
+                .await
+            {
+                Ok(status) => return Ok(status),
+                Err(_) => {
+                    attempts += 1;
+                    sleep(Duration::from_millis(DELAY_MS)).await;
+                }
+            }
+        }
+
+        bail!(
+            "Failed to get server status after {} attempts",
+            MAX_ATTEMPTS
+        )
+    }
+
+    async fn wait_registration_close(&self) -> Result<(), Error> {
+        const MAX_ATTEMPTS: u32 = 30;
+        const DELAY_MS: u64 = 1000;
+
+        for _ in 0..MAX_ATTEMPTS {
+            match self.poll_server_status().await? {
+                ServerState::ReadyForPkShares => return Ok(()),
+                ServerState::ReadyForJoining => {
+                    sleep(Duration::from_millis(DELAY_MS)).await;
+                }
+                _ => bail!("Unexpected server state"),
+            }
+        }
+
+        bail!("Timed out waiting for registration to close")
     }
 
     async fn acquire_pk(
@@ -87,6 +129,7 @@ impl Wallet {
         let (param, crs) = self.get_param_crs().await?;
         let user_id = self.register().await?;
         let mut pc = PhantomClient::<PrimeRing, NonNativePowerOfTwo>::new(param, crs, user_id);
+        self.wait_registration_close().await?;
         self.acquire_pk(&mut pc).await?;
         self.submit_bs_key_share(pc.bs_key_share_gen()).await?;
 

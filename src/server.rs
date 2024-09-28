@@ -28,6 +28,12 @@ async fn register(ss: &State<MutexServerStorage>) -> Result<Json<usize>, ErrorRe
     Ok(Json(user))
 }
 
+/// Get the current server status
+#[get("/status")]
+async fn get_status(ss: &State<MutexServerStorage>) -> Result<Json<ServerState>, ErrorResponse> {
+    let ss = ss.lock().await;
+    Ok(Json(ss.state.clone()))
+}
 
 
 /// The user submits Public Key shares
@@ -138,6 +144,7 @@ pub fn rocket(n_users: usize) -> Rocket<Build> {
             routes![
                 get_param,
                 register,
+                get_status,
                 submit_pk_shares,
                 get_aggregated_pk,
                 submit_bsks,

@@ -1,5 +1,6 @@
 use crate::client::Wallet;
 use crate::server::rocket;
+use futures::join;
 
 use std::sync::Once;
 use tokio;
@@ -25,6 +26,11 @@ async fn test_fullflow() {
     let url = "http://localhost:5566";
     let user = Wallet::new(url);
     let user2 = Wallet::new(url);
-    user.run_setup().await.unwrap();
-    user2.run_setup().await.unwrap();
+    let user_setup = user.run_setup();
+    let user2_setup = user2.run_setup();
+
+    let (user_result, user2_result) = futures::join!(user_setup, user2_setup);
+
+    user_result.unwrap();
+    user2_result.unwrap();
 }
