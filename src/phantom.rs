@@ -3,6 +3,10 @@ use itertools::Itertools;
 use phantom_zone_evaluator::boolean::{fhew::prelude::*, FheBool};
 use rand::{rngs::StdRng, RngCore, SeedableRng};
 use serde::{Deserialize, Serialize};
+use std::ops::{BitAnd, BitOr, BitXor};
+
+pub(crate) type DesCipher<'a> =
+    Vec<FheBool<'a, FhewBoolEvaluator<NoisyPrimeRing, NonNativePowerOfTwo>>>;
 
 pub(crate) struct Client<R: RingOps, M: ModulusOps> {
     param: FhewBoolMpiParam,
@@ -368,6 +372,24 @@ fn deserialize_cts_bits<R: RingOps>(
     cts.iter().map(|ct| ct.uncompact(ring)).collect_vec()
 }
 
+trait BitOps<Rhs = Self, Output = Self>:
+    BitAnd<Rhs, Output = Output> + BitOr<Rhs, Output = Output> + BitXor<Rhs, Output = Output>
+{
+}
+
+impl<T, Rhs, Output> BitOps<Rhs, Output> for T where
+    T: BitAnd<Rhs, Output = Output> + BitOr<Rhs, Output = Output> + BitXor<Rhs, Output = Output>
+{
+}
+
+pub(crate) fn function_bit<T>(a: &T, b: &T, c: &T, d: &T) -> T
+where
+    T: for<'t> BitOps<&'t T, T>,
+    for<'t> &'t T: BitOps<&'t T, T>,
+{
+    ((a | b) & c) ^ d
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -375,7 +397,6 @@ mod tests {
     use num_traits::NumOps;
     use phantom_zone_evaluator::boolean::fhew::param::I_4P;
     use rand::Rng;
-    use std::ops::{BitAnd, BitOr, BitXor};
 
     fn function<T>(a: &T, b: &T, c: &T, d: &T, e: &T) -> T
     where
@@ -440,25 +461,7 @@ mod tests {
         // Aggregate decryption shares
         assert_eq!(g, clients[0].decrypt_u8(&ct_g, &ct_g_dec_shares));
     }
-    trait BitOps<Rhs = Self, Output = Self>:
-        BitAnd<Rhs, Output = Output> + BitOr<Rhs, Output = Output> + BitXor<Rhs, Output = Output>
-    {
-    }
 
-    impl<T, Rhs, Output> BitOps<Rhs, Output> for T where
-        T: BitAnd<Rhs, Output = Output>
-            + BitOr<Rhs, Output = Output>
-            + BitXor<Rhs, Output = Output>
-    {
-    }
-
-    fn function_bit<T>(a: &T, b: &T, c: &T, d: &T) -> T
-    where
-        T: for<'t> BitOps<&'t T, T>,
-        for<'t> &'t T: BitOps<&'t T, T>,
-    {
-        ((a | b) & c) ^ d
-    }
     #[test]
     fn test_phantom_bits() {
         let mut server = Server::<NoisyPrimeRing, NonNativePowerOfTwo>::new(I_4P);

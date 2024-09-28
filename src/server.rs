@@ -1,11 +1,14 @@
-use crate::phantom::Server as PhantomServer;
+use crate::phantom::{function_bit, Server as PhantomServer};
 use crate::types::{
     AnnotatedDecryptionShare, BskShareSubmission, Cipher, CipherSubmission,
     DecryptionShareSubmission, Error, ErrorResponse, MutexServerStorage, ParamCRS,
     PkShareSubmission, ServerState, ServerStorage, UserId, UserStorage,
 };
 
+use itertools::Itertools;
 use phantom_zone_evaluator::boolean::fhew::param::I_4P;
+use phantom_zone_evaluator::boolean::fhew::prelude::{NoisyPrimeRing, NonNativePowerOfTwo};
+use phantom_zone_evaluator::boolean::FheBool;
 use rocket::serde::json::Json;
 use rocket::serde::msgpack::MsgPack;
 use rocket::{get, post, routes};
@@ -173,16 +176,25 @@ pub struct ComputationChannels {
 async fn background_computation(
     mut input_receiver: mpsc::Receiver<Vec<Cipher>>,
     output_sender: mpsc::Sender<Vec<Cipher>>,
-    pc: PhantomServer,
+    ps: &PhantomServer<NoisyPrimeRing, NonNativePowerOfTwo>,
 ) {
     while let Some(ciphers) = input_receiver.recv().await {
         // Perform the FHE computation here
         println!("Performing computation on {} ciphers", ciphers.len());
 
-        // TODO: Implement actual FHE computation
+        let deserialized_cts = ciphers
+            .iter()
+            .map(|cipher| ps.deserialize_cts_bits(cipher))
+            .collect_vec();
+
+        let [user_1_input, user_2_input] = deserialized_cts.try_into().unwrap();
+        let [a, b]: [FheBool<_>; 2] = user_1_input.try_into().unwrap();
+        let [c, d]: [FheBool<_>; 2] = user_2_input.try_into().unwrap();
+
+        let g: FheBool<_> = function_bit(&a, &b, &c, &d);
         // For now, we'll just simulate a computation by waiting and returning the input
-        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-        let result = ciphers;
+        // Should be decryptables
+        let result = ps.serialize_cts_bits(&[vec![g]]);
 
         // Send the result
         if let Err(e) = output_sender.send(result).await {
