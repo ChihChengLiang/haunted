@@ -101,6 +101,8 @@ impl Display for ServerState {
 pub(crate) type MutexServerStorage = Arc<Mutex<ServerStorage>>;
 
 pub(crate) struct ServerStorage {
+    /// Close registration when this number is reached
+    n_users: usize,
     pub(crate) ps: PhantomServer<NoisyPrimeRing, NonNativePowerOfTwo>,
     pub(crate) state: ServerState,
     pub(crate) users: Vec<UserRecord>,
@@ -116,8 +118,9 @@ impl fmt::Debug for ServerStorage {
 }
 
 impl ServerStorage {
-    pub(crate) fn new(param: FhewBoolMpiParam) -> Self {
+    pub(crate) fn new(param: FhewBoolMpiParam, n_users: usize) -> Self {
         Self {
+            n_users,
             ps: PhantomServer::new(param),
             state: ServerState::ReadyForJoining,
             users: vec![],
@@ -126,6 +129,10 @@ impl ServerStorage {
 
     pub(crate) fn get_param_crs(&self) -> ParamCRS {
         self.ps.get_param_crs()
+    }
+
+    pub(crate) fn is_users_full(&self) -> bool {
+        self.n_users == self.users.len()
     }
 
     pub(crate) fn add_user(&mut self) -> UserId {

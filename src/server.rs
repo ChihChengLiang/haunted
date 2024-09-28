@@ -22,10 +22,13 @@ async fn register(ss: &State<MutexServerStorage>) -> Result<Json<usize>, ErrorRe
     let mut ss = ss.lock().await;
     ss.ensure(ServerState::ReadyForJoining)?;
     let user = ss.add_user();
+    if ss.is_users_full() {
+        ss.transit(ServerState::ReadyForPkShares);
+    }
     Ok(Json(user))
 }
 
-async fn setup_status() -> () {}
+
 
 /// The user submits Public Key shares
 #[post("/submit_pk_shares", data = "<submission>", format = "msgpack")]
@@ -124,11 +127,11 @@ async fn get_decryption_share(
     Ok(Json(decryption_shares[output_id].clone()))
 }
 
-pub fn rocket() -> Rocket<Build> {
+pub fn rocket(n_users: usize) -> Rocket<Build> {
     let param = I_4P;
     rocket::build()
         .manage(MutexServerStorage::new(Mutex::new(ServerStorage::new(
-            param,
+            param, n_users,
         ))))
         .mount(
             "/",
