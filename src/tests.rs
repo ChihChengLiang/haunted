@@ -1,27 +1,32 @@
 use crate::client::Wallet;
 use crate::server::rocket;
 
-use std::sync::Once;
+use std::time::Duration;
 use tokio;
+use tokio::sync::oneshot;
 
-static INIT: Once = Once::new();
 static N_USERS: usize = 2;
 
-async fn setup_server() {
-    INIT.call_once(|| {
-        tokio::spawn(async {
-            rocket(N_USERS)
-                .launch()
-                .await
-                .expect("server failed to start");
-        });
+async fn setup_server(shutdown_rx: oneshot::Receiver<()>) {
+    tokio::spawn(async move {
+        rocket(N_USERS)
+            .launch()
+            .await
+            .expect("server failed to start");
     });
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+    let _ = shutdown_rx.await;
 }
 
 #[rocket::async_test]
 async fn test_fullflow() {
-    setup_server().await;
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+    let server_handle = tokio::spawn(setup_server(shutdown_rx));
+
+    // Give the server a moment to start up
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
     let url = "http://localhost:5566";
     let user = Wallet::new(url);
     let user2 = Wallet::new(url);
@@ -32,4 +37,10 @@ async fn test_fullflow() {
 
     user_result.unwrap();
     user2_result.unwrap();
+
+    // Signal the server to shut down
+    shutdown_tx.send(()).unwrap();
+
+    // Wait for the server to shut down
+    server_handle.await.unwrap();
 }
