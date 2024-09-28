@@ -91,7 +91,8 @@ impl Wallet {
     ) -> Result<Vec<u8>, Error> {
         let pk_share = pc.pk_share_gen();
         // Submit the public key share
-        self.rc
+        let _user_id: UserId = self
+            .rc
             .post_msgpack(
                 &uri!(submit_pk_shares).to_string(),
                 &PkShareSubmission {
