@@ -1,19 +1,25 @@
 use crate::{
     phantom::Client as PhantomClient,
     server::*,
-    types::{AnnotatedDecryptionShare, Decryptable, DecryptionShareSubmission, ParamCRS, UserId},
+    types::{
+        AnnotatedDecryptionShare, BskShareSubmission, Decryptable, DecryptionShareSubmission,
+        ParamCRS, PkShareSubmission, ServerState, UserId,
+    },
 };
+
 use anyhow::{bail, Error};
 use indicatif::{ProgressBar, ProgressStyle};
 use phantom_zone_evaluator::boolean::fhew::prelude::{NonNativePowerOfTwo, PrimeRing};
 use reqwest::{self, header::CONTENT_TYPE, Client};
 use rocket::{serde::msgpack, uri};
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 use std::{
     pin::Pin,
     task::{Context, Poll},
 };
 use tokio::io::AsyncRead;
+use tokio::time::sleep;
 use tokio_util::io::ReaderStream;
 
 pub struct Wallet {
@@ -37,19 +43,56 @@ impl Wallet {
         self.rc.post_nobody(&uri!(register).to_string()).await
     }
 
-    async fn acquire_pk(
+    async fn wait_for_server_state(
         &self,
-        pc: &mut PhantomClient<PrimeRing, NonNativePowerOfTwo>,
-    ) -> Result<Vec<u8>, Error> {
-        let pk_share = pc.pk_share_gen();
-        let server_pk = vec![];
-        pc.receive_pk(&server_pk);
-        Ok(vec![])
+        desired_state: ServerState,
+    ) -> Result<ServerState, Error> {
+        const MAX_ATTEMPTS: u32 = 30;
+        const DELAY_MS: u64 = 1000;
+
+        for _ in 0..MAX_ATTEMPTS {
+            if let Ok(status) = self
+                .rc
+                .get::<ServerState>(&uri!(get_status).to_string())
+                .await
+            {
+                if status == desired_state {
+                    return Ok(status);
+                }
+            }
+            sleep(Duration::from_millis(DELAY_MS)).await;
+        }
+        bail!("Timed out waiting for server state: {:?}", desired_state)
     }
 
-    async fn submit_bs_key_share(&self, bs_key_share: Vec<u8>) -> Result<UserId, Error> {
+    async fn acquire_pk(&self, user_id: UserId, pk_share: Vec<u8>) -> Result<Vec<u8>, Error> {
+        // Submit the public key share
+        let _: UserId = self
+            .rc
+            .post_msgpack(
+                &uri!(submit_pk_shares).to_string(),
+                &PkShareSubmission { user_id, pk_share },
+            )
+            .await?;
+        for _ in 0..10 {
+            if let Ok(server_pk) = self.rc.get(&uri!(get_aggregated_pk).to_string()).await {
+                return Ok(server_pk);
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+        bail!("Failed to get aggregated public key".to_string());
+    }
+
+    async fn submit_bs_key_share(
+        &self,
+        user_id: UserId,
+        bsk_share: Vec<u8>,
+    ) -> Result<UserId, Error> {
         self.rc
-            .post_msgpack(&uri!(submit_bsks).to_string(), &bs_key_share)
+            .post_msgpack(
+                &uri!(submit_bsks).to_string(),
+                &BskShareSubmission { user_id, bsk_share },
+            )
             .await
     }
 
@@ -60,8 +103,14 @@ impl Wallet {
         let (param, crs) = self.get_param_crs().await?;
         let user_id = self.register().await?;
         let mut pc = PhantomClient::<PrimeRing, NonNativePowerOfTwo>::new(param, crs, user_id);
-        self.acquire_pk(&mut pc).await?;
-        self.submit_bs_key_share(pc.bs_key_share_gen()).await?;
+        self.wait_for_server_state(ServerState::ReadyForPkShares)
+            .await?;
+        let server_pk = self.acquire_pk(user_id, pc.pk_share_gen()).await?;
+        pc.receive_pk(&server_pk);
+        self.wait_for_server_state(ServerState::ReadyForBskShares)
+            .await?;
+        self.submit_bs_key_share(user_id, pc.bs_key_share_gen())
+            .await?;
 
         Ok(SetupWallet {
             rc: self.rc.clone(),
@@ -146,6 +195,7 @@ impl ProductionClient {
     }
 
     fn path(&self, path: &str) -> String {
+        println!("{}", path);
         format!("{}/{}", self.url, path)
     }
 

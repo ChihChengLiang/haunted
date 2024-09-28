@@ -1,6 +1,7 @@
 use crate::types::{
-    AnnotatedDecryptionShare, DecryptionShareSubmission, Error, ErrorResponse, MutexServerStorage,
-    ParamCRS, ServerState, ServerStorage, SksSubmission, UserId, UserStorage,
+    AnnotatedDecryptionShare, BskShareSubmission, DecryptionShareSubmission, Error, ErrorResponse,
+    MutexServerStorage, ParamCRS, PkShareSubmission, ServerState, ServerStorage, UserId,
+    UserStorage,
 };
 
 use phantom_zone_evaluator::boolean::fhew::param::I_4P;
@@ -21,44 +22,74 @@ async fn register(ss: &State<MutexServerStorage>) -> Result<Json<usize>, ErrorRe
     let mut ss = ss.lock().await;
     ss.ensure(ServerState::ReadyForJoining)?;
     let user = ss.add_user();
+    if ss.is_users_full() {
+        ss.transit(ServerState::ReadyForPkShares);
+    }
     Ok(Json(user))
 }
 
-async fn setup_status() -> () {}
+/// Get the current server status
+#[get("/status")]
+async fn get_status(ss: &State<MutexServerStorage>) -> Result<Json<ServerState>, ErrorResponse> {
+    let ss = ss.lock().await;
+    Ok(Json(ss.state.clone()))
+}
 
-/// The user submits Server key shares
-#[post("/submit_bsks", data = "<submission>", format = "msgpack")]
-async fn submit_bsks(
-    submission: MsgPack<SksSubmission>,
+/// The user submits Public Key shares
+#[post("/submit_pk_shares", data = "<submission>", format = "msgpack")]
+async fn submit_pk_shares(
+    submission: MsgPack<PkShareSubmission>,
     ss: &State<MutexServerStorage>,
 ) -> Result<Json<UserId>, ErrorResponse> {
     let mut ss = ss.lock().await;
 
-    ss.ensure(ServerState::ReadyForInputs)?;
+    ss.ensure(ServerState::ReadyForPkShares)?;
 
-    let SksSubmission { user_id, sks } = submission.0;
+    let PkShareSubmission { user_id, pk_share } = submission.0;
 
     let user = ss.get_user(user_id)?;
-    user.storage = UserStorage::Sks(Box::new(sks));
+    user.storage = UserStorage::PkShare(pk_share);
 
-    if ss.check_cipher_submission() {
+    if ss.check_pk_share_submission() {
+        ss.aggregate_pk_shares()?;
+        ss.transit(ServerState::ReadyForBskShares);
+    }
+
+    Ok(Json(user_id))
+}
+
+/// The user acquires the aggregated public key
+#[get("/get_aggregated_pk")]
+async fn get_aggregated_pk(ss: &State<MutexServerStorage>) -> Result<Json<Vec<u8>>, ErrorResponse> {
+    let ss = ss.lock().await;
+
+    ss.ensure(ServerState::ReadyForBskShares)?;
+
+    // Serialize the aggregated public key
+    let aggregated_pk = ss.ps.serialize_pk();
+
+    Ok(Json(aggregated_pk))
+}
+
+/// The user submits Server key shares
+#[post("/submit_bsks", data = "<submission>", format = "msgpack")]
+async fn submit_bsks(
+    submission: MsgPack<BskShareSubmission>,
+    ss: &State<MutexServerStorage>,
+) -> Result<Json<UserId>, ErrorResponse> {
+    let mut ss = ss.lock().await;
+
+    ss.ensure(ServerState::ReadyForBskShares)?;
+
+    let BskShareSubmission { user_id, bsk_share } = submission.0;
+
+    let user = ss.get_user(user_id)?;
+    user.storage = UserStorage::BskShare(Box::new(bsk_share));
+
+    if ss.check_bsk_share_submission() {
         ss.transit(ServerState::ReadyForInputs);
-        let server_key_shares = ss.get_sks()?;
-
-        tokio::task::spawn_blocking(move || {
-            rayon::ThreadPoolBuilder::new()
-                .build_scoped(
-                    // Initialize thread-local storage parameters
-                    |thread| thread.run(),
-                    // Run parallel code under this pool
-                    |pool| {
-                        pool.install(|| {
-                            println!("Derive server key");
-                        })
-                    },
-                )
-                .unwrap();
-        });
+        println!("Derive bootstrap key");
+        ss.aggregate_bsk_shares()?;
     }
 
     Ok(Json(user_id))
@@ -101,17 +132,20 @@ async fn get_decryption_share(
     Ok(Json(decryption_shares[output_id].clone()))
 }
 
-pub fn rocket() -> Rocket<Build> {
+pub fn rocket(n_users: usize) -> Rocket<Build> {
     let param = I_4P;
     rocket::build()
         .manage(MutexServerStorage::new(Mutex::new(ServerStorage::new(
-            param,
+            param, n_users,
         ))))
         .mount(
             "/",
             routes![
                 get_param,
                 register,
+                get_status,
+                submit_pk_shares,
+                get_aggregated_pk,
                 submit_bsks,
                 submit_decryption_shares,
                 get_decryption_share,

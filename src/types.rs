@@ -26,6 +26,10 @@ pub(crate) enum Error {
     WrongServerState { expect: String, got: String },
     #[error("User #{user_id} is unregistered")]
     UnregisteredUser { user_id: usize },
+    #[error("The public key share from user #{user_id} not found")]
+    PkShareNotFound { user_id: UserId },
+    #[error("The bootstrap key share from user #{user_id} not found")]
+    BskShareNotFound { user_id: UserId },
     #[error("The ciphertext from user #{user_id} not found")]
     CipherNotFound { user_id: UserId },
     #[error("Decryption share of {output_id} from user {user_id} not found")]
@@ -48,7 +52,9 @@ impl From<Error> for ErrorResponse {
             Error::WrongServerState { .. } | Error::CipherNotFound { .. } => {
                 ErrorResponse::ServerError(error.to_string())
             }
-            Error::DecryptionShareNotFound { .. }
+            Error::PkShareNotFound { .. }
+            | Error::BskShareNotFound { .. }
+            | Error::DecryptionShareNotFound { .. }
             | Error::UnregisteredUser { .. }
             | Error::OutputNotReady => ErrorResponse::NotFoundError(error.to_string()),
         }
@@ -59,7 +65,10 @@ impl From<Error> for ErrorResponse {
 pub enum ServerState {
     /// Users are allowed to join the computation
     ReadyForJoining,
-    /// The number of user is determined now.
+    /// Ready for public key shares
+    ReadyForPkShares,
+    /// Ready for bootstrap key shares
+    ReadyForBskShares,
     /// We can now accept ciphertexts, which depends on the number of users.
     ReadyForInputs,
     ReadyForRunning,
@@ -92,6 +101,8 @@ impl Display for ServerState {
 pub(crate) type MutexServerStorage = Arc<Mutex<ServerStorage>>;
 
 pub(crate) struct ServerStorage {
+    /// Close registration when this number is reached
+    n_users: usize,
     pub(crate) ps: PhantomServer<NoisyPrimeRing, NonNativePowerOfTwo>,
     pub(crate) state: ServerState,
     pub(crate) users: Vec<UserRecord>,
@@ -107,8 +118,9 @@ impl fmt::Debug for ServerStorage {
 }
 
 impl ServerStorage {
-    pub(crate) fn new(param: FhewBoolMpiParam) -> Self {
+    pub(crate) fn new(param: FhewBoolMpiParam, n_users: usize) -> Self {
         Self {
+            n_users,
             ps: PhantomServer::new(param),
             state: ServerState::ReadyForJoining,
             users: vec![],
@@ -117,6 +129,10 @@ impl ServerStorage {
 
     pub(crate) fn get_param_crs(&self) -> ParamCRS {
         self.ps.get_param_crs()
+    }
+
+    pub(crate) fn is_users_full(&self) -> bool {
+        self.n_users == self.users.len()
     }
 
     pub(crate) fn add_user(&mut self) -> UserId {
@@ -144,23 +160,43 @@ impl ServerStorage {
             .ok_or(Error::UnregisteredUser { user_id })
     }
 
-    pub(crate) fn check_cipher_submission(&self) -> bool {
+    pub(crate) fn check_pk_share_submission(&self) -> bool {
         self.users
             .iter()
-            .all(|user| matches!(user.storage, UserStorage::Sks(..)))
+            .all(|user| matches!(user.storage, UserStorage::PkShare(..)))
     }
 
-    pub(crate) fn get_sks(&mut self) -> Result<Vec<ServerKeyShare>, Error> {
-        let mut server_key_shares = vec![];
-        for (user_id, user) in self.users.iter_mut().enumerate() {
-            if let Some(sks) = user.storage.get_cipher_sks() {
-                server_key_shares.push(sks.clone());
-                user.storage = UserStorage::DecryptionShare(None);
+    pub(crate) fn aggregate_pk_shares(&mut self) -> Result<(), Error> {
+        let mut pk_shares = Vec::new();
+        for (user_id, user) in self.users.iter().enumerate() {
+            if let UserStorage::PkShare(pk_share) = &user.storage {
+                pk_shares.push(pk_share.clone());
             } else {
-                return Err(Error::CipherNotFound { user_id });
+                return Err(Error::PkShareNotFound { user_id });
             }
         }
-        Ok(server_key_shares)
+        self.ps.aggregate_pk_shares(&pk_shares);
+        Ok(())
+    }
+
+    pub(crate) fn check_bsk_share_submission(&self) -> bool {
+        self.users
+            .iter()
+            .all(|user| matches!(user.storage, UserStorage::BskShare(..)))
+    }
+
+    pub(crate) fn aggregate_bsk_shares(&mut self) -> Result<Vec<ServerKeyShare>, Error> {
+        let mut bsk_shares = vec![];
+        for (user_id, user) in self.users.iter_mut().enumerate() {
+            if let Some(bsk_share) = user.storage.get_bsk_share() {
+                bsk_shares.push(bsk_share.clone());
+                user.storage = UserStorage::DecryptionShare(None);
+            } else {
+                return Err(Error::BskShareNotFound { user_id });
+            }
+        }
+        self.ps.aggregate_bs_key_shares::<PrimeRing>(&bsk_shares);
+        Ok(bsk_shares)
     }
 }
 
@@ -173,14 +209,15 @@ pub(crate) struct UserRecord {
 #[derive(Debug, Clone)]
 pub(crate) enum UserStorage {
     Empty,
-    Sks(Box<ServerKeyShare>),
+    PkShare(Vec<u8>),
+    BskShare(Box<Vec<u8>>),
     DecryptionShare(Option<Vec<AnnotatedDecryptionShare>>),
 }
 
 impl UserStorage {
-    pub(crate) fn get_cipher_sks(&self) -> Option<&ServerKeyShare> {
+    pub(crate) fn get_bsk_share(&self) -> Option<&Vec<u8>> {
         match self {
-            Self::Sks(sks) => Some(sks),
+            Self::BskShare(bsk_share) => Some(bsk_share),
             _ => None,
         }
     }
@@ -200,9 +237,16 @@ pub type DecryptionSharesMap = HashMap<(usize, UserId), DecryptionShare>;
 
 #[derive(Serialize, Deserialize)]
 #[serde(crate = "rocket::serde")]
-pub(crate) struct SksSubmission {
+pub(crate) struct PkShareSubmission {
     pub(crate) user_id: UserId,
-    pub(crate) sks: ServerKeyShare,
+    pub(crate) pk_share: Vec<u8>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(crate = "rocket::serde")]
+pub(crate) struct BskShareSubmission {
+    pub(crate) user_id: UserId,
+    pub(crate) bsk_share: Vec<u8>,
 }
 
 #[derive(Serialize, Deserialize)]
