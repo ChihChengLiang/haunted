@@ -1,6 +1,7 @@
 use crate::client::Wallet;
 use crate::server::rocket;
 
+use std::array::from_fn;
 use std::time::Duration;
 use tokio;
 use tokio::sync::oneshot;
@@ -35,8 +36,11 @@ async fn test_fullflow() {
 
     let (user_result, user2_result) = futures::join!(user_setup, user2_setup);
 
-    user_result.unwrap();
-    user2_result.unwrap();
+    let user = user_result.unwrap();
+    let user2 = user2_result.unwrap();
+
+    user.submit_input(&[true, false, true]).await.unwrap();
+    user2.submit_input(&[true, true, false]).await.unwrap();
 
     // Signal the server to shut down
     shutdown_tx.send(()).unwrap();

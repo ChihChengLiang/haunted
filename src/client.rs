@@ -2,8 +2,8 @@ use crate::{
     phantom::Client as PhantomClient,
     server::*,
     types::{
-        AnnotatedDecryptionShare, BskShareSubmission, Decryptable, DecryptionShareSubmission,
-        ParamCRS, PkShareSubmission, ServerState, UserId,
+        AnnotatedDecryptionShare, BskShareSubmission, CipherSubmission, Decryptable,
+        DecryptionShareSubmission, ParamCRS, PkShareSubmission, ServerState, UserId,
     },
 };
 
@@ -179,12 +179,16 @@ impl SetupWallet {
         }
     }
 
-    pub async fn submit_cipher(&self, cipher: Cipher) -> Result<(), Error> {
+    pub async fn submit_input(&self, input: &[bool]) -> Result<(), Error> {
+        let cipher = self.pc.pk_encrypt_bit(input.to_owned());
         let submission = CipherSubmission {
             user_id: self.user_id,
             cipher,
         };
-        self.rc.post_msgpack("/submit_cipher", &submission).await?;
+        let _: () = self
+            .rc
+            .post_msgpack(&uri!(submit_cipher).to_string(), &submission)
+            .await?;
         Ok(())
     }
 }

@@ -70,7 +70,7 @@ pub enum ServerState {
     ReadyForPkShares,
     /// Ready for bootstrap key shares
     ReadyForBskShares,
-    /// We can now accept ciphertexts, which depends on the number of users.
+    /// We can now accept ciphertexts
     ReadyForInputs,
     ReadyForRunning,
     RunningFhe,
@@ -264,6 +264,13 @@ pub(crate) struct PkShareSubmission {
 pub(crate) struct BskShareSubmission {
     pub(crate) user_id: UserId,
     pub(crate) bsk_share: Vec<u8>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(crate = "rocket::serde")]
+pub(crate) struct CipherSubmission {
+    pub(crate) user_id: UserId,
+    pub(crate) cipher: Vec<u8>,
 }
 
 #[derive(Serialize, Deserialize)]

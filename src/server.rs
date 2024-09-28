@@ -1,7 +1,7 @@
 use crate::types::{
-    AnnotatedDecryptionShare, BskShareSubmission, DecryptionShareSubmission, Error, ErrorResponse,
-    MutexServerStorage, ParamCRS, PkShareSubmission, ServerState, ServerStorage, UserId,
-    UserStorage,
+    AnnotatedDecryptionShare, BskShareSubmission, CipherSubmission, DecryptionShareSubmission,
+    Error, ErrorResponse, MutexServerStorage, ParamCRS, PkShareSubmission, ServerState,
+    ServerStorage, UserId, UserStorage,
 };
 
 use phantom_zone_evaluator::boolean::fhew::param::I_4P;
@@ -132,13 +132,6 @@ async fn get_decryption_share(
     Ok(Json(decryption_shares[output_id].clone()))
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(crate = "rocket::serde")]
-pub(crate) struct CipherSubmission {
-    pub(crate) user_id: UserId,
-    pub(crate) cipher: Cipher,
-}
-
 /// The user submits a cipher
 #[post("/submit_cipher", data = "<submission>", format = "msgpack")]
 async fn submit_cipher(
@@ -158,7 +151,6 @@ async fn submit_cipher(
         let ciphers = ss.get_ciphers_for_computation();
         // TODO: Perform actual computation with ciphers
         println!("Starting computation with {} ciphers", ciphers.len());
-        ss.transit(ServerState::RunningFhe);
     }
 
     Ok(Json(()))
