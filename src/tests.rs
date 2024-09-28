@@ -1,6 +1,5 @@
 use crate::client::Wallet;
 use crate::server::rocket;
-use futures::join;
 
 use std::sync::Once;
 use tokio;

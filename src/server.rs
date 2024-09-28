@@ -35,7 +35,6 @@ async fn get_status(ss: &State<MutexServerStorage>) -> Result<Json<ServerState>,
     Ok(Json(ss.state.clone()))
 }
 
-
 /// The user submits Public Key shares
 #[post("/submit_pk_shares", data = "<submission>", format = "msgpack")]
 async fn submit_pk_shares(
