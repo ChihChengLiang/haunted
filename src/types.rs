@@ -5,7 +5,7 @@ use rand::rngs::StdRng;
 use rocket::serde::{Deserialize, Serialize};
 use rocket::tokio::sync::Mutex;
 use rocket::Responder;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt::Display;
 use std::fmt::{self, Debug};
 use std::sync::Arc;
@@ -19,6 +19,7 @@ pub type Word = Vec<u8>;
 pub type AnnotatedDecryptionShare = (usize, DecryptionShare);
 pub type ServerKeyShare = Vec<u8>;
 pub type ParamCRS = (FhewBoolMpiParam, FhewBoolMpiCrs<StdRng>);
+pub type Cipher = Vec<u8>;
 
 #[derive(Debug, Error)]
 pub(crate) enum Error {
@@ -106,6 +107,7 @@ pub(crate) struct ServerStorage {
     pub(crate) ps: PhantomServer<NoisyPrimeRing, NonNativePowerOfTwo>,
     pub(crate) state: ServerState,
     pub(crate) users: Vec<UserRecord>,
+    cipher_queues: Vec<VecDeque<Cipher>>,
 }
 
 impl fmt::Debug for ServerStorage {
@@ -124,6 +126,7 @@ impl ServerStorage {
             ps: PhantomServer::new(param),
             state: ServerState::ReadyForJoining,
             users: vec![],
+            cipher_queues: vec![],
         }
     }
 
@@ -141,6 +144,7 @@ impl ServerStorage {
             id,
             storage: UserStorage::Empty,
         });
+        self.cipher_queues.push(VecDeque::new());
         id
     }
 
@@ -197,6 +201,19 @@ impl ServerStorage {
         }
         self.ps.aggregate_bs_key_shares::<PrimeRing>(&bsk_shares);
         Ok(bsk_shares)
+    }
+
+    pub(crate) fn submit_cipher(&mut self, user_id: UserId, cipher: Cipher) -> Result<(), Error> {
+        self.cipher_queues.get_mut(user_id).ok_or(Error::UnregisteredUser { user_id })?.push_back(cipher);
+        Ok(())
+    }
+
+    pub(crate) fn is_ready_for_computation(&self) -> bool {
+        self.cipher_queues.iter().all(|queue| !queue.is_empty())
+    }
+
+    pub(crate) fn get_ciphers_for_computation(&mut self) -> Vec<Cipher> {
+        self.cipher_queues.iter_mut().map(|queue| queue.pop_front().unwrap()).collect()
     }
 }
 

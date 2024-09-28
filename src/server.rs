@@ -132,6 +132,38 @@ async fn get_decryption_share(
     Ok(Json(decryption_shares[output_id].clone()))
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(crate = "rocket::serde")]
+pub(crate) struct CipherSubmission {
+    pub(crate) user_id: UserId,
+    pub(crate) cipher: Cipher,
+}
+
+/// The user submits a cipher
+#[post("/submit_cipher", data = "<submission>", format = "msgpack")]
+async fn submit_cipher(
+    submission: MsgPack<CipherSubmission>,
+    ss: &State<MutexServerStorage>,
+) -> Result<Json<()>, ErrorResponse> {
+    let mut ss = ss.lock().await;
+
+    ss.ensure(ServerState::ReadyForInputs)?;
+
+    let CipherSubmission { user_id, cipher } = submission.0;
+
+    ss.submit_cipher(user_id, cipher)?;
+
+    if ss.is_ready_for_computation() {
+        // Trigger computation
+        let ciphers = ss.get_ciphers_for_computation();
+        // TODO: Perform actual computation with ciphers
+        println!("Starting computation with {} ciphers", ciphers.len());
+        ss.transit(ServerState::RunningFhe);
+    }
+
+    Ok(Json(()))
+}
+
 pub fn rocket(n_users: usize) -> Rocket<Build> {
     let param = I_4P;
     rocket::build()
@@ -149,6 +181,7 @@ pub fn rocket(n_users: usize) -> Rocket<Build> {
                 submit_bsks,
                 submit_decryption_shares,
                 get_decryption_share,
+                submit_cipher,
             ],
         )
 }

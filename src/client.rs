@@ -178,6 +178,15 @@ impl SetupWallet {
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         }
     }
+
+    pub async fn submit_cipher(&self, cipher: Cipher) -> Result<(), Error> {
+        let submission = CipherSubmission {
+            user_id: self.user_id,
+            cipher,
+        };
+        self.rc.post_msgpack("/submit_cipher", &submission).await?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]
