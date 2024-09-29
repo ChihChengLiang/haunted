@@ -5,9 +5,6 @@ use rand::{rngs::StdRng, RngCore, SeedableRng};
 use serde::{Deserialize, Serialize};
 use std::ops::{BitAnd, BitOr, BitXor};
 
-pub(crate) type DesCipher<'a> =
-    Vec<FheBool<'a, FhewBoolEvaluator<NoisyPrimeRing, NonNativePowerOfTwo>>>;
-
 pub(crate) struct Client<R: RingOps, M: ModulusOps> {
     param: FhewBoolMpiParam,
     crs: FhewBoolMpiCrs<StdRng>,
