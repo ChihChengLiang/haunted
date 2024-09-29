@@ -21,7 +21,7 @@ use tokio::task;
 use tokio::time::sleep;
 
 #[get("/param")]
-pub(crate) async fn get_param(ss: &State<MutexServerStorage>) -> Json<ParamCRS> {
+async fn get_param(ss: &State<MutexServerStorage>) -> Json<ParamCRS> {
     let ss = ss.lock().await;
     Json(ss.get_param_crs())
 }

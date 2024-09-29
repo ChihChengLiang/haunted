@@ -2,9 +2,9 @@ use crate::{
     phantom::Client as PhantomClient,
     server::*,
     types::{
-        AnnotatedDecryptionShare, BskShareSubmission, Cipher, CipherSubmission, Decryptable,
-        DecryptionShareSubmission, ParamCRS, PkShareSubmission, ServerState, Task, TaskId,
-        TaskStatus, UserId,
+        AnnotatedDecryptionShare, BskShareSubmission, Cipher, CipherSubmission,
+        CreateTaskSubmission, Decryptable, DecryptionShareSubmission, ParamCRS, PkShareSubmission,
+        ServerState, Task, TaskId, TaskInputSubmission, TaskStatus, UserId,
     },
 };
 
@@ -36,14 +36,6 @@ impl Wallet {
 }
 
 impl Wallet {
-    async fn get_param_crs(&self) -> Result<ParamCRS, Error> {
-        self.rc.get(&uri!(get_param).to_string()).await
-    }
-
-    async fn register(&self) -> Result<UserId, Error> {
-        self.rc.post_nobody(&uri!(register).to_string()).await
-    }
-
     async fn wait_for_server_state(
         &self,
         desired_state: ServerState,
@@ -52,11 +44,7 @@ impl Wallet {
         const DELAY_MS: u64 = 1000;
 
         for _ in 0..MAX_ATTEMPTS {
-            if let Ok(status) = self
-                .rc
-                .get::<ServerState>(&uri!(get_status).to_string())
-                .await
-            {
+            if let Ok(status) = self.rc.get_status().await {
                 if status == desired_state {
                     return Ok(status);
                 }
@@ -68,15 +56,9 @@ impl Wallet {
 
     async fn acquire_pk(&self, user_id: UserId, pk_share: Vec<u8>) -> Result<Vec<u8>, Error> {
         // Submit the public key share
-        let _: UserId = self
-            .rc
-            .post_msgpack(
-                &uri!(submit_pk_shares).to_string(),
-                &PkShareSubmission { user_id, pk_share },
-            )
-            .await?;
+        let _: UserId = self.rc.submit_pk_shares(user_id, pk_share).await?;
         for _ in 0..10 {
-            if let Ok(server_pk) = self.rc.get(&uri!(get_aggregated_pk).to_string()).await {
+            if let Ok(server_pk) = self.rc.get_aggregated_pk().await {
                 return Ok(server_pk);
             }
             sleep(Duration::from_millis(100)).await;
@@ -84,25 +66,12 @@ impl Wallet {
         bail!("Failed to get aggregated public key".to_string());
     }
 
-    async fn submit_bs_key_share(
-        &self,
-        user_id: UserId,
-        bsk_share: Vec<u8>,
-    ) -> Result<UserId, Error> {
-        self.rc
-            .post_msgpack(
-                &uri!(submit_bsks).to_string(),
-                &BskShareSubmission { user_id, bsk_share },
-            )
-            .await
-    }
-
     /// Complete the flow to derive server key shares
     ///
     /// Wait actions from other users
     pub async fn run_setup(&self) -> Result<SetupWallet, Error> {
-        let (param, crs) = self.get_param_crs().await?;
-        let user_id = self.register().await?;
+        let (param, crs) = self.rc.get_param_crs().await?;
+        let user_id = self.rc.register().await?;
         let mut pc = PhantomClient::<PrimeRing, NonNativePowerOfTwo>::new(param, crs, user_id);
         self.wait_for_server_state(ServerState::ReadyForPkShares)
             .await?;
@@ -110,8 +79,7 @@ impl Wallet {
         pc.receive_pk(&server_pk);
         self.wait_for_server_state(ServerState::ReadyForBskShares)
             .await?;
-        self.submit_bs_key_share(user_id, pc.bs_key_share_gen())
-            .await?;
+        self.rc.submit_bsks(user_id, pc.bs_key_share_gen()).await?;
 
         Ok(SetupWallet {
             rc: self.rc.clone(),
@@ -167,7 +135,7 @@ impl SetupWallet {
                 if task.status == TaskStatus::WaitingForInput
                     && !task.inputs.contains_key(&self.user_id)
                 {
-                    let input = self.get_input_for_task(task.id)?; // Implement this method
+                    let input = vec![true, true]; // Customize this
                     let cipher = self.pc.pk_encrypt_bit(input);
                     self.rc
                         .submit_task_input(task.id, self.user_id, cipher)
@@ -184,7 +152,7 @@ impl SetupWallet {
             for (task_id, decryptable) in decryptables {
                 let share = self.pc.decrypt_share_bits(&decryptable.word);
                 self.rc
-                    .submit_decryption_share(task_id, decryptable.id, self.user_id, share)
+                    .submit_decryption_share(task_id, 0, self.user_id, share)
                     .await?;
             }
             tokio::time::sleep(Duration::from_secs(5)).await;
@@ -277,6 +245,108 @@ impl ProductionClient {
             .send()
             .await?;
         Self::handle_response(response).await
+    }
+
+    pub async fn get_param_crs(&self) -> Result<ParamCRS, Error> {
+        self.get(&uri!(get_param).to_string()).await
+    }
+
+    pub async fn register(&self) -> Result<UserId, Error> {
+        self.post_nobody(&uri!(register).to_string()).await
+    }
+
+    pub async fn get_status(&self) -> Result<ServerState, Error> {
+        self.get(&uri!(get_status).to_string()).await
+    }
+
+    pub async fn submit_pk_shares(
+        &self,
+        user_id: UserId,
+        pk_share: Vec<u8>,
+    ) -> Result<UserId, Error> {
+        self.post_msgpack(
+            &uri!(submit_pk_shares).to_string(),
+            &PkShareSubmission { user_id, pk_share },
+        )
+        .await
+    }
+
+    pub async fn get_aggregated_pk(&self) -> Result<Vec<u8>, Error> {
+        self.get(&uri!(get_aggregated_pk).to_string()).await
+    }
+
+    pub async fn submit_bsks(&self, user_id: UserId, bsk_share: Vec<u8>) -> Result<UserId, Error> {
+        self.post_msgpack(
+            &uri!(submit_bsks).to_string(),
+            &BskShareSubmission { user_id, bsk_share },
+        )
+        .await
+    }
+
+    pub async fn create_task(
+        &self,
+        initiator: UserId,
+        required_inputs: Vec<UserId>,
+        initiator_input: Cipher,
+    ) -> Result<TaskId, Error> {
+        self.post_msgpack(
+            &uri!(create_task).to_string(),
+            &CreateTaskSubmission {
+                initiator,
+                required_inputs,
+                initiator_input,
+            },
+        )
+        .await
+    }
+
+    pub async fn get_tasks_for_user(&self, user_id: UserId) -> Result<Vec<Task>, Error> {
+        self.get(&uri!(get_tasks_for_user(user_id)).to_string())
+            .await
+    }
+
+    pub async fn submit_task_input(
+        &self,
+        task_id: TaskId,
+        user_id: UserId,
+        input: Cipher,
+    ) -> Result<(), Error> {
+        self.post_msgpack(
+            &uri!(submit_task_input).to_string(),
+            &TaskInputSubmission {
+                task_id,
+                user_id,
+                input,
+            },
+        )
+        .await
+    }
+
+    pub async fn get_decryptables_for_user(
+        &self,
+        user_id: UserId,
+    ) -> Result<Vec<(TaskId, Decryptable)>, Error> {
+        self.get(&uri!(get_decryptables_for_user(user_id)).to_string())
+            .await
+    }
+
+    pub async fn submit_decryption_share(
+        &self,
+        task_id: TaskId,
+        decryptable_id: usize,
+        user_id: UserId,
+        share: Vec<u8>,
+    ) -> Result<(), Error> {
+        self.post_msgpack(
+            &uri!(submit_decryption_share).to_string(),
+            &DecryptionShareSubmission {
+                task_id,
+                decryptable_id,
+                user_id,
+                share,
+            },
+        )
+        .await
     }
 }
 
