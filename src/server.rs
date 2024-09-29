@@ -1,9 +1,9 @@
 use crate::phantom::{function_bit, Server as PhantomServer};
 use crate::types::{
     AnnotatedDecryptionShare, BskShareSubmission, Cipher, CipherSubmission, CreateTaskSubmission,
-    Decryptable, DecryptionShareSubmission, Error, ErrorResponse, MutexServerStorage, ParamCRS,
-    PkShareSubmission, ServerState, ServerStorage, Task, TaskId, TaskInputSubmission, UserId,
-    UserStorage,
+    Decryptable, DecryptableBuilder, DecryptionShareSubmission, Error, ErrorResponse,
+    MutexServerStorage, ParamCRS, PkShareSubmission, ServerState, ServerStorage, Task, TaskId,
+    TaskInputSubmission, UserId, UserStorage,
 };
 
 use itertools::Itertools;
@@ -154,7 +154,11 @@ async fn submit_task_input(
 }
 
 async fn background_computation(ss: MutexServerStorage) {
-    let ps = { ss.lock().await.ps.clone() };
+    let (ps, n_users) = {
+        let ss = ss.lock().await;
+        (ss.ps.clone(), ss.n_users)
+    };
+    let builder = DecryptableBuilder::new(n_users);
     loop {
         let task_to_process = {
             let mut ss = ss.lock().await;
@@ -181,10 +185,9 @@ async fn background_computation(ss: MutexServerStorage) {
             // For now, we'll just simulate a computation by waiting and returning the input
             // Should be decryptables
             let g = ps.serialize_cts_bits(&[g]);
-            let result = vec![g.clone(), g];
 
             // Create decryptables from the result
-            let decryptables = vec![]; // Replace with actual decryptables
+            let decryptables = vec![builder.new_public(g.clone()), builder.new_designated(g, 1)]; // Replace with actual decryptables
             ss.complete_task(task_id, decryptables).unwrap();
         } else {
             // No tasks ready, sleep for a bit before checking again

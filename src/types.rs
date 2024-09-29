@@ -163,7 +163,7 @@ pub(crate) type MutexServerStorage = Arc<Mutex<ServerStorage>>;
 
 pub(crate) struct ServerStorage {
     /// Close registration when this number is reached
-    n_users: usize,
+    pub(crate) n_users: usize,
     pub(crate) ps: PhantomServer<NoisyPrimeRing, NonNativePowerOfTwo>,
     pub(crate) state: ServerState,
     pub(crate) users: Vec<UserRecord>,
@@ -420,8 +420,6 @@ pub(crate) struct DecryptionShareSubmission {
     pub(crate) decryption_shares: Vec<AnnotatedDecryptionShare>,
 }
 
-pub type DecryptableID = usize;
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
 enum Visibility {
     Public,
@@ -430,7 +428,6 @@ enum Visibility {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct Decryptable {
-    pub(crate) id: usize,
     vis: Visibility,
     pub(crate) word: Word,
     shares: HashMap<UserId, DecryptionShare>,
@@ -440,9 +437,8 @@ pub(crate) struct Decryptable {
 }
 
 impl Decryptable {
-    fn new(id: usize, n_users: usize, word: Word, vis: Visibility) -> Self {
+    fn new(n_users: usize, word: Word, vis: Visibility) -> Self {
         Self {
-            id,
             vis,
             word,
             shares: HashMap::default(),
@@ -465,5 +461,23 @@ impl Decryptable {
             Visibility::Public => self.shares.len() == self.n_users,
             Visibility::Designated(_) => self.shares.len() == self.n_users - 1,
         }
+    }
+}
+
+pub(crate) struct DecryptableBuilder {
+    n_users: usize,
+}
+
+impl DecryptableBuilder {
+    pub(crate) fn new(n_users: usize) -> Self {
+        Self { n_users }
+    }
+
+    pub(crate) fn new_public(&self, word: Word) -> Decryptable {
+        Decryptable::new(self.n_users, word, Visibility::Public)
+    }
+
+    pub(crate) fn new_designated(&self, word: Word, user_id: UserId) -> Decryptable {
+        Decryptable::new(self.n_users, word, Visibility::Designated(user_id))
     }
 }

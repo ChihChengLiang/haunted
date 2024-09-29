@@ -126,69 +126,7 @@ pub struct SetupWallet {
     pc: PhantomClient<PrimeRing, NonNativePowerOfTwo>,
 }
 
-impl SetupWallet {
-    async fn listen_for_decryptables(&self) -> Result<Vec<Decryptable>, Error> {
-        // Poll the server for new decryptables
-        let decryptables: Vec<Decryptable> = self.rc.get("/decryptables").await?;
-        Ok(decryptables)
-    }
-
-    fn generate_decryption_share(&self, decryptable: &Decryptable) -> AnnotatedDecryptionShare {
-        // Generate decryption share for the given decryptable
-        let decryption_share = self.pc.decrypt_share_u8(&decryptable.word);
-
-        // Create an AnnotatedDecryptionShare with the decryptable's ID and the generated share
-        (decryptable.id, decryption_share)
-    }
-
-    async fn submit_decryption_share(&self, share: AnnotatedDecryptionShare) -> Result<(), Error> {
-        let submission = DecryptionShareSubmission {
-            user_id: self.user_id,
-            decryption_shares: vec![share],
-        };
-        self.rc
-            .post_msgpack("/submit_decryption_share", &submission)
-            .await?;
-        Ok(())
-    }
-
-    async fn handle_decrypted_data(&self) {
-        todo!()
-    }
-
-    pub async fn serve_decryption_keys(&self) -> Result<(), Error> {
-        loop {
-            // Listen to published decryptables
-            let decryptables = self.listen_for_decryptables().await?;
-
-            for decryptable in decryptables {
-                // Submit decryption share if requested
-                if decryptable.should_contribute(self.user_id) {
-                    let share = self.generate_decryption_share(&decryptable);
-                    self.submit_decryption_share(share).await?;
-                }
-
-                // Decrypt decryptables whenever possible
-                if decryptable.is_complete {
-                    // let plaintext = self.decrypt_decryptable(&decryptable)?;
-                    // self.handle_decrypted_data(plaintext).await?;
-                }
-            }
-
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-        }
-    }
-
-    pub async fn submit_input(&self, input: &[bool]) -> Result<(), Error> {
-        let cipher = self.pc.pk_encrypt_bit(input.to_owned());
-        let submission = CipherSubmission {
-            user_id: self.user_id,
-            cipher,
-        };
-
-        Ok(())
-    }
-}
+impl SetupWallet {}
 
 #[derive(Debug, Clone)]
 pub struct ProductionClient {
