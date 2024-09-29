@@ -267,14 +267,6 @@ impl ServerStorage {
         Ok(bsk_shares)
     }
 
-    pub(crate) fn accept_cipher(&mut self, user_id: UserId, cipher: Cipher) -> Result<(), Error> {
-        self.cipher_queues
-            .get_mut(user_id)
-            .ok_or(Error::UnregisteredUser { user_id })?
-            .push_back(cipher);
-        Ok(())
-    }
-
     pub(crate) fn is_ready_for_computation(&self) -> bool {
         self.cipher_queues.iter().all(|queue| !queue.is_empty())
     }
@@ -471,45 +463,5 @@ impl Decryptable {
         if self.shares.len() == self.n_users {
             self.is_complete = true;
         }
-    }
-}
-
-pub(crate) struct DecryptableManager {
-    n_users: usize,
-    decryptables: Vec<Decryptable>,
-}
-
-impl DecryptableManager {
-    pub(crate) fn new(n_users: usize) -> Self {
-        Self {
-            n_users,
-            decryptables: vec![],
-        }
-    }
-    fn add_decryptable(&mut self, word: Word, vis: Visibility) -> DecryptableID {
-        let id = self.decryptables.len();
-        let d = Decryptable::new(id, self.n_users, word, vis);
-        self.decryptables.push(d);
-        id
-    }
-
-    pub(crate) fn add_public(&mut self, word: Word) -> DecryptableID {
-        self.add_decryptable(word, Visibility::Public)
-    }
-
-    pub(crate) fn add_designated(&mut self, word: Word, user_id: UserId) -> DecryptableID {
-        self.add_decryptable(word, Visibility::Designated(user_id))
-    }
-
-    pub(crate) fn list_decryption_duties(&self, user_id: UserId) -> Vec<Word> {
-        self.decryptables
-            .iter()
-            .filter(|d| !d.is_complete)
-            .filter(|d| match d.vis {
-                Visibility::Public => true,
-                Visibility::Designated(designated_id) => user_id != designated_id,
-            })
-            .map(|d| d.word.clone())
-            .collect_vec()
     }
 }
