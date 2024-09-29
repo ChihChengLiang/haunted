@@ -3,7 +3,8 @@ use crate::{
     server::*,
     types::{
         AnnotatedDecryptionShare, BskShareSubmission, Cipher, CipherSubmission, Decryptable,
-        DecryptionShareSubmission, ParamCRS, PkShareSubmission, ServerState, UserId,
+        DecryptionShareSubmission, ParamCRS, PkShareSubmission, ServerState, Task, TaskId,
+        TaskStatus, UserId,
     },
 };
 
@@ -13,7 +14,7 @@ use phantom_zone_evaluator::boolean::fhew::prelude::{NonNativePowerOfTwo, PrimeR
 use reqwest::{self, header::CONTENT_TYPE, Client};
 use rocket::{serde::msgpack, uri};
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 use std::{
     pin::Pin,
     task::{Context, Poll},
@@ -116,6 +117,7 @@ impl Wallet {
             rc: self.rc.clone(),
             user_id,
             pc,
+            tasks: Default::default(),
         })
     }
 }
@@ -124,9 +126,84 @@ pub struct SetupWallet {
     rc: ProductionClient,
     user_id: UserId,
     pc: PhantomClient<PrimeRing, NonNativePowerOfTwo>,
+    tasks: HashMap<TaskId, TaskStatus>,
 }
 
-impl SetupWallet {}
+impl SetupWallet {
+    pub async fn create_task(
+        &mut self,
+        required_inputs: Vec<UserId>,
+        input: Vec<bool>,
+    ) -> Result<TaskId, Error> {
+        // Encrypt input
+        let cipher = self.pc.pk_encrypt_bit(input);
+
+        // Create task on server
+        let task_id = self
+            .rc
+            .create_task(self.user_id, required_inputs, cipher)
+            .await?;
+
+        // Store task locally
+        self.tasks.insert(task_id, TaskStatus::WaitingForInput);
+
+        Ok(task_id)
+    }
+
+    pub async fn monitor_tasks(&mut self) -> Result<(), Error> {
+        loop {
+            let tasks = self.rc.get_tasks_for_user(self.user_id).await?;
+            for task in tasks {
+                self.update_task_status(task);
+            }
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    }
+
+    pub async fn handle_input_requests(&mut self) -> Result<(), Error> {
+        loop {
+            let tasks = self.rc.get_tasks_for_user(self.user_id).await?;
+            for task in tasks {
+                if task.status == TaskStatus::WaitingForInput
+                    && !task.inputs.contains_key(&self.user_id)
+                {
+                    let input = self.get_input_for_task(task.id)?; // Implement this method
+                    let cipher = self.pc.pk_encrypt_bit(input);
+                    self.rc
+                        .submit_task_input(task.id, self.user_id, cipher)
+                        .await?;
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    }
+
+    pub async fn handle_decryptable_requests(&mut self) -> Result<(), Error> {
+        loop {
+            let decryptables = self.rc.get_decryptables_for_user(self.user_id).await?;
+            for (task_id, decryptable) in decryptables {
+                let share = self.pc.decrypt_share_bits(&decryptable.word);
+                self.rc
+                    .submit_decryption_share(task_id, decryptable.id, self.user_id, share)
+                    .await?;
+            }
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    }
+
+    fn update_task_status(&mut self, task: Task) {
+        self.tasks.insert(task.id, task.status.clone());
+        if task.status == TaskStatus::Done {
+            self.process_completed_task(task);
+        }
+    }
+
+    fn process_completed_task(&self, task: Task) {
+        // Implement logic to retrieve and decrypt the final result
+    }
+
+    // Implement other helper methods...
+}
 
 #[derive(Debug, Clone)]
 pub struct ProductionClient {
