@@ -22,6 +22,60 @@ pub type ServerKeyShare = Vec<u8>;
 pub type ParamCRS = (FhewBoolMpiParam, FhewBoolMpiCrs<StdRng>);
 pub type Cipher = Vec<u8>;
 
+pub type TaskId = usize;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum TaskStatus {
+    WaitingForInput,
+    Running,
+    WaitingDecryptionShares,
+    Done,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Task {
+    pub id: TaskId,
+    pub initiator: UserId,
+    pub required_inputs: Vec<UserId>,
+    pub status: TaskStatus,
+    pub inputs: HashMap<UserId, Cipher>,
+    pub decryptables: Vec<Decryptable>,
+}
+
+impl Task {
+    pub fn new(
+        id: TaskId,
+        initiator: UserId,
+        required_inputs: Vec<UserId>,
+        initiator_input: Cipher,
+    ) -> Self {
+        let mut inputs = HashMap::new();
+        inputs.insert(initiator, initiator_input);
+        Self {
+            id,
+            initiator,
+            required_inputs,
+            status: TaskStatus::WaitingForInput,
+            inputs,
+            decryptables: Vec::new(),
+        }
+    }
+
+    pub fn is_ready_to_run(&self) -> bool {
+        self.required_inputs
+            .iter()
+            .all(|user_id| self.inputs.contains_key(user_id))
+    }
+
+    pub fn add_input(&mut self, user_id: UserId, input: Cipher) -> Result<(), Error> {
+        if !self.required_inputs.contains(&user_id) {
+            return Err(Error::UnexpectedInput { user_id });
+        }
+        self.inputs.insert(user_id, input);
+        Ok(())
+    }
+}
+
 #[derive(Debug, Error)]
 pub(crate) enum Error {
     #[error("Wrong server state: expect {expect} but got {got}")]
@@ -40,6 +94,10 @@ pub(crate) enum Error {
     OutputNotReady,
     #[error("ComputatoinError: {reason}")]
     ComputationErr { reason: String },
+    #[error("Task #{task_id} not found")]
+    TaskNotFound { task_id: TaskId },
+    #[error("Unexpected input from user #{user_id}")]
+    UnexpectedInput { user_id: UserId },
 }
 
 #[derive(Responder)]
@@ -61,6 +119,7 @@ impl From<Error> for ErrorResponse {
             | Error::DecryptionShareNotFound { .. }
             | Error::UnregisteredUser { .. }
             | Error::OutputNotReady => ErrorResponse::NotFoundError(error.to_string()),
+            _ => ErrorResponse::ServerError(error.to_string()),
         }
     }
 }
@@ -108,6 +167,8 @@ pub(crate) struct ServerStorage {
     pub(crate) state: ServerState,
     pub(crate) users: Vec<UserRecord>,
     cipher_queues: Vec<VecDeque<Cipher>>,
+    pub(crate) task_queue: VecDeque<Task>,
+    pub(crate) next_task_id: TaskId,
 }
 
 impl fmt::Debug for ServerStorage {
@@ -127,6 +188,8 @@ impl ServerStorage {
             state: ServerState::ReadyForJoining,
             users: vec![],
             cipher_queues: vec![],
+            task_queue: VecDeque::new(),
+            next_task_id: 0,
         }
     }
 
@@ -220,6 +283,60 @@ impl ServerStorage {
             .iter_mut()
             .map(|queue| queue.pop_front().unwrap())
             .collect()
+    }
+
+    pub(crate) fn create_task(
+        &mut self,
+        initiator: UserId,
+        required_inputs: Vec<UserId>,
+        initiator_input: Cipher,
+    ) -> TaskId {
+        let task_id = self.next_task_id;
+        self.next_task_id += 1;
+        let task = Task::new(task_id, initiator, required_inputs, initiator_input);
+        self.task_queue.push_back(task);
+        task_id
+    }
+
+    pub(crate) fn get_task(&mut self, task_id: TaskId) -> Result<&mut Task, Error> {
+        self.task_queue
+            .iter_mut()
+            .find(|task| task.id == task_id)
+            .ok_or(Error::TaskNotFound { task_id })
+    }
+
+    pub(crate) fn get_tasks_for_user(&self, user_id: UserId) -> Vec<&Task> {
+        self.task_queue
+            .iter()
+            .filter(|task| {
+                task.required_inputs.contains(&user_id) && !task.inputs.contains_key(&user_id)
+            })
+            .collect()
+    }
+
+    pub(crate) fn add_input_to_task(
+        &mut self,
+        task_id: TaskId,
+        user_id: UserId,
+        input: Cipher,
+    ) -> Result<(), Error> {
+        let task = self.get_task(task_id)?;
+        task.add_input(user_id, input)?;
+        if task.is_ready_to_run() {
+            task.status = TaskStatus::Running;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn complete_task(
+        &mut self,
+        task_id: TaskId,
+        decryptables: Vec<Decryptable>,
+    ) -> Result<(), Error> {
+        let task = self.get_task(task_id)?;
+        task.decryptables = decryptables;
+        task.status = TaskStatus::WaitingDecryptionShares;
+        Ok(())
     }
 }
 

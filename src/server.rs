@@ -18,6 +18,22 @@ use tokio::sync::mpsc;
 use tokio::sync::Mutex;
 use tokio::task;
 
+#[derive(Serialize, Deserialize)]
+#[serde(crate = "rocket::serde")]
+pub(crate) struct CreateTaskSubmission {
+    pub(crate) initiator: UserId,
+    pub(crate) required_inputs: Vec<UserId>,
+    pub(crate) initiator_input: Cipher,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(crate = "rocket::serde")]
+pub(crate) struct TaskInputSubmission {
+    pub(crate) task_id: TaskId,
+    pub(crate) user_id: UserId,
+    pub(crate) input: Cipher,
+}
+
 #[get("/param")]
 pub(crate) async fn get_param(ss: &State<MutexServerStorage>) -> Json<ParamCRS> {
     let ss = ss.lock().await;
@@ -170,6 +186,49 @@ async fn submit_cipher(
     Ok(Json(()))
 }
 
+/// Create a new task
+#[post("/create_task", data = "<submission>", format = "msgpack")]
+async fn create_task(
+    submission: MsgPack<CreateTaskSubmission>,
+    ss: &State<MutexServerStorage>,
+) -> Result<Json<TaskId>, ErrorResponse> {
+    let mut ss = ss.lock().await;
+    let CreateTaskSubmission {
+        initiator,
+        required_inputs,
+        initiator_input,
+    } = submission.0;
+    let task_id = ss.create_task(initiator, required_inputs, initiator_input);
+    Ok(Json(task_id))
+}
+
+/// Get tasks for a user
+#[get("/tasks/<user_id>")]
+async fn get_tasks_for_user(
+    user_id: UserId,
+    ss: &State<MutexServerStorage>,
+) -> Result<Json<Vec<Task>>, ErrorResponse> {
+    let ss = ss.lock().await;
+    let tasks = ss.get_tasks_for_user(user_id);
+    Ok(Json(tasks.into_iter().cloned().collect()))
+}
+
+/// Submit input for a task
+#[post("/submit_task_input", data = "<submission>", format = "msgpack")]
+async fn submit_task_input(
+    submission: MsgPack<TaskInputSubmission>,
+    ss: &State<MutexServerStorage>,
+) -> Result<Json<()>, ErrorResponse> {
+    let mut ss = ss.lock().await;
+    let TaskInputSubmission {
+        task_id,
+        user_id,
+        input,
+    } = submission.0;
+    ss.add_input_to_task(task_id, user_id, input)?;
+    Ok(Json(()))
+}
+
 pub struct ComputationChannels {
     input_sender: mpsc::Sender<Vec<Cipher>>,
     output_receiver: mpsc::Receiver<Vec<Cipher>>,
@@ -177,25 +236,25 @@ pub struct ComputationChannels {
 
 async fn background_computation(
     mut input_receiver: mpsc::Receiver<Vec<Cipher>>,
-    output_sender: mpsc::Sender<Vec<Cipher>>,
     ss: Arc<MutexServerStorage>,
 ) {
-    while let Some(ciphers) = input_receiver.recv().await {
+    while let Some(task_id) = input_receiver.recv().await {
+        let mut ss = ss.lock().await;
+        let task = ss.get_task(task_id).unwrap();
+
         // Perform the FHE computation here
-        println!("Performing computation on {} ciphers", ciphers.len());
+        println!("Performing computation for task {}", task_id);
 
-        let ss = ss.lock().await;
         let ps = &ss.ps;
-
-        let deserialized_cts = ciphers
-            .iter()
+        let inputs: Vec<Vec<FheBool<_>>> = task
+            .inputs
+            .values()
             .map(|cipher| ps.deserialize_cts_bits(cipher))
-            .collect_vec();
+            .collect();
 
         let [user_1_input, user_2_input] = deserialized_cts.try_into().unwrap();
         let [a, b]: [FheBool<_>; 2] = user_1_input.try_into().unwrap();
         let [c, d]: [FheBool<_>; 2] = user_2_input.try_into().unwrap();
-
         let g: FheBool<_> = function_bit(&a, &b, &c, &d);
         // For now, we'll just simulate a computation by waiting and returning the input
         // Should be decryptables
@@ -206,6 +265,10 @@ async fn background_computation(
         if let Err(e) = output_sender.send(result).await {
             eprintln!("Failed to send computation result: {}", e);
         }
+
+        // Create decryptables from the result
+        let decryptables = vec![]; // Replace with actual decryptables
+        ss.complete_task(task_id, decryptables).unwrap();
     }
 }
 
@@ -224,11 +287,7 @@ pub fn rocket(n_users: usize) -> Rocket<Build> {
     ))));
 
     // Spawn the background computation task
-    task::spawn(background_computation(
-        input_receiver,
-        output_sender,
-        ss.clone(),
-    ));
+    task::spawn(background_computation(input_receiver, ss.clone()));
 
     rocket::build()
         .manage(ss)
@@ -245,6 +304,9 @@ pub fn rocket(n_users: usize) -> Rocket<Build> {
                 submit_decryption_shares,
                 get_decryption_share,
                 submit_cipher,
+                create_task,
+                get_tasks_for_user,
+                submit_task_input,
             ],
         )
 }
