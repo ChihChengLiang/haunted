@@ -143,7 +143,7 @@ impl<R: RingOps, M: ModulusOps> Client<R, M> {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(bound(serialize = "", deserialize = ""))]
 pub(crate) struct Server<R: RingOps, M: ModulusOps> {
     param: FhewBoolMpiParam,

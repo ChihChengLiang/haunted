@@ -185,10 +185,7 @@ impl SetupWallet {
             user_id: self.user_id,
             cipher,
         };
-        let _: () = self
-            .rc
-            .post_msgpack(&uri!(submit_cipher).to_string(), &submission)
-            .await?;
+
         Ok(())
     }
 }

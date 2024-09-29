@@ -1,7 +1,7 @@
 use crate::phantom::{function_bit, Server as PhantomServer};
 use crate::types::{
     AnnotatedDecryptionShare, BskShareSubmission, Cipher, CipherSubmission, CreateTaskSubmission,
-    DecryptionShareSubmission, Error, ErrorResponse, MutexServerStorage, ParamCRS,
+    Decryptable, DecryptionShareSubmission, Error, ErrorResponse, MutexServerStorage, ParamCRS,
     PkShareSubmission, ServerState, ServerStorage, Task, TaskId, TaskInputSubmission, UserId,
     UserStorage,
 };
@@ -86,6 +86,7 @@ async fn submit_bsks(
     submission: MsgPack<BskShareSubmission>,
     ss: &State<MutexServerStorage>,
 ) -> Result<Json<UserId>, ErrorResponse> {
+    let ss_clone = Arc::clone(&ss);
     let mut ss = ss.lock().await;
 
     ss.ensure(ServerState::ReadyForBskShares)?;
@@ -101,7 +102,6 @@ async fn submit_bsks(
         ss.aggregate_bsk_shares()?;
 
         // Spawn the background computation task
-        let ss_clone = ss.clone();
         task::spawn(async move {
             background_computation(ss_clone).await;
         });
@@ -190,7 +190,8 @@ async fn submit_task_input(
     Ok(Json(()))
 }
 
-async fn background_computation(ss: Arc<MutexServerStorage>) {
+async fn background_computation(ss: MutexServerStorage) {
+    let ps = { ss.lock().await.ps.clone() };
     loop {
         let task_to_process = {
             let mut ss = ss.lock().await;
@@ -204,14 +205,13 @@ async fn background_computation(ss: Arc<MutexServerStorage>) {
             // Perform the FHE computation here
             println!("Performing computation for task {}", task_id);
 
-            let ps = &ss.ps;
             let inputs: Vec<Vec<FheBool<_>>> = task
                 .inputs
                 .values()
                 .map(|cipher| ps.deserialize_cts_bits(cipher))
                 .collect();
 
-            let [user_1_input, user_2_input] = deserialized_cts.try_into().unwrap();
+            let [user_1_input, user_2_input] = inputs.try_into().unwrap();
             let [a, b]: [FheBool<_>; 2] = user_1_input.try_into().unwrap();
             let [c, d]: [FheBool<_>; 2] = user_2_input.try_into().unwrap();
             let g: FheBool<_> = function_bit(&a, &b, &c, &d);
