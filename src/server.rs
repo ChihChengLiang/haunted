@@ -14,9 +14,11 @@ use rocket::serde::msgpack::MsgPack;
 use rocket::{get, post, routes};
 use rocket::{Build, Rocket, State};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::sync::Mutex;
 use tokio::task;
+use tokio::time::sleep;
 
 #[get("/param")]
 pub(crate) async fn get_param(ss: &State<MutexServerStorage>) -> Json<ParamCRS> {
@@ -97,6 +99,12 @@ async fn submit_bsks(
         ss.transit(ServerState::ReadyForInputs);
         println!("Derive bootstrap key");
         ss.aggregate_bsk_shares()?;
+
+        // Spawn the background computation task
+        let ss_clone = ss.clone();
+        task::spawn(async move {
+            background_computation(ss_clone).await;
+        });
     }
 
     Ok(Json(user_id))
@@ -137,37 +145,6 @@ async fn get_decryption_share(
         .ok_or(Error::OutputNotReady)?
         .ok_or(Error::DecryptionShareNotFound { output_id, user_id })?;
     Ok(Json(decryption_shares[output_id].clone()))
-}
-
-/// The user submits a cipher
-#[post("/submit_cipher", data = "<submission>", format = "msgpack")]
-async fn submit_cipher(
-    submission: MsgPack<CipherSubmission>,
-    ss: &State<MutexServerStorage>,
-    channels: &State<Arc<ComputationChannels>>,
-) -> Result<Json<()>, ErrorResponse> {
-    let mut ss = ss.lock().await;
-
-    ss.ensure(ServerState::ReadyForInputs)?;
-
-    let CipherSubmission { user_id, cipher } = submission.0;
-
-    ss.accept_cipher(user_id, cipher)?;
-
-    if ss.is_ready_for_computation() {
-        let ciphers = ss.get_ciphers_for_computation();
-        println!("Starting computation with {} ciphers", ciphers.len());
-
-        // Send ciphers to the background computation task
-        if let Err(e) = channels.input_sender.send(ciphers).await {
-            return Err(Error::ComputationErr {
-                reason: e.to_string(),
-            }
-            .into());
-        }
-    }
-
-    Ok(Json(()))
 }
 
 /// Create a new task
@@ -213,84 +190,64 @@ async fn submit_task_input(
     Ok(Json(()))
 }
 
-pub struct ComputationChannels {
-    input_sender: mpsc::Sender<Vec<Cipher>>,
-    output_receiver: mpsc::Receiver<Vec<Cipher>>,
-}
+async fn background_computation(ss: Arc<MutexServerStorage>) {
+    loop {
+        let task_to_process = {
+            let mut ss = ss.lock().await;
+            ss.get_next_ready_task()
+        };
 
-async fn background_computation(
-    mut input_receiver: mpsc::Receiver<Vec<Cipher>>,
-    ss: Arc<MutexServerStorage>,
-) {
-    while let Some(task_id) = input_receiver.recv().await {
-        let mut ss = ss.lock().await;
-        let task = ss.get_task(task_id).unwrap();
+        if let Some(task_id) = task_to_process {
+            let mut ss = ss.lock().await;
+            let task = ss.get_task(task_id).unwrap();
 
-        // Perform the FHE computation here
-        println!("Performing computation for task {}", task_id);
+            // Perform the FHE computation here
+            println!("Performing computation for task {}", task_id);
 
-        let ps = &ss.ps;
-        let inputs: Vec<Vec<FheBool<_>>> = task
-            .inputs
-            .values()
-            .map(|cipher| ps.deserialize_cts_bits(cipher))
-            .collect();
+            let ps = &ss.ps;
+            let inputs: Vec<Vec<FheBool<_>>> = task
+                .inputs
+                .values()
+                .map(|cipher| ps.deserialize_cts_bits(cipher))
+                .collect();
 
-        let [user_1_input, user_2_input] = deserialized_cts.try_into().unwrap();
-        let [a, b]: [FheBool<_>; 2] = user_1_input.try_into().unwrap();
-        let [c, d]: [FheBool<_>; 2] = user_2_input.try_into().unwrap();
-        let g: FheBool<_> = function_bit(&a, &b, &c, &d);
-        // For now, we'll just simulate a computation by waiting and returning the input
-        // Should be decryptables
-        let g = ps.serialize_cts_bits(&[g]);
-        let result = vec![g.clone(), g];
+            let [user_1_input, user_2_input] = deserialized_cts.try_into().unwrap();
+            let [a, b]: [FheBool<_>; 2] = user_1_input.try_into().unwrap();
+            let [c, d]: [FheBool<_>; 2] = user_2_input.try_into().unwrap();
+            let g: FheBool<_> = function_bit(&a, &b, &c, &d);
+            // For now, we'll just simulate a computation by waiting and returning the input
+            // Should be decryptables
+            let g = ps.serialize_cts_bits(&[g]);
+            let result = vec![g.clone(), g];
 
-        // Send the result
-        if let Err(e) = output_sender.send(result).await {
-            eprintln!("Failed to send computation result: {}", e);
+            // Create decryptables from the result
+            let decryptables = vec![]; // Replace with actual decryptables
+            ss.complete_task(task_id, decryptables).unwrap();
+        } else {
+            // No tasks ready, sleep for a bit before checking again
+            sleep(Duration::from_millis(100)).await;
         }
-
-        // Create decryptables from the result
-        let decryptables = vec![]; // Replace with actual decryptables
-        ss.complete_task(task_id, decryptables).unwrap();
     }
 }
 
 pub fn rocket(n_users: usize) -> Rocket<Build> {
     let param = I_4P;
-    let (input_sender, input_receiver) = mpsc::channel(100);
-    let (output_sender, output_receiver) = mpsc::channel(100);
+    let ss = MutexServerStorage::new(Mutex::new(ServerStorage::new(param, n_users)));
 
-    let computation_channels = ComputationChannels {
-        input_sender,
-        output_receiver,
-    };
-
-    let ss = Arc::new(MutexServerStorage::new(Mutex::new(ServerStorage::new(
-        param, n_users,
-    ))));
-
-    // Spawn the background computation task
-    task::spawn(background_computation(input_receiver, ss.clone()));
-
-    rocket::build()
-        .manage(ss)
-        .manage(Arc::new(computation_channels))
-        .mount(
-            "/",
-            routes![
-                get_param,
-                register,
-                get_status,
-                submit_pk_shares,
-                get_aggregated_pk,
-                submit_bsks,
-                submit_decryption_shares,
-                get_decryption_share,
-                submit_cipher,
-                create_task,
-                get_tasks_for_user,
-                submit_task_input,
-            ],
-        )
+    rocket::build().manage(ss).mount(
+        "/",
+        routes![
+            get_param,
+            register,
+            get_status,
+            submit_pk_shares,
+            get_aggregated_pk,
+            submit_bsks,
+            submit_decryption_shares,
+            get_decryption_share,
+            create_task,
+            get_tasks_for_user,
+            submit_task_input,
+        ],
+    )
 }

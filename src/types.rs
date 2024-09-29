@@ -27,6 +27,7 @@ pub type TaskId = usize;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum TaskStatus {
     WaitingForInput,
+    ReadyToRun,
     Running,
     WaitingDecryptionShares,
     Done,
@@ -337,6 +338,13 @@ impl ServerStorage {
         task.decryptables = decryptables;
         task.status = TaskStatus::WaitingDecryptionShares;
         Ok(())
+    }
+
+    pub(crate) fn get_next_ready_task(&mut self) -> Option<TaskId> {
+        self.task_queue
+            .iter()
+            .find(|task| task.status == TaskStatus::ReadyToRun)
+            .map(|task| task.id)
     }
 }
 
