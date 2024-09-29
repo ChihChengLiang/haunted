@@ -388,13 +388,14 @@ impl ServerStorage {
             });
         }
 
-        let decryptable =
-            task.decryptables
-                .get_mut(decryptable_id)
-                .ok_or(Error::DecryptableNotFound {
-                    task_id,
-                    decryptable_id,
-                })?;
+        let decryptable = task
+            .decryptables
+            .iter_mut()
+            .find(|d| d.id == decryptable_id)
+            .ok_or(Error::DecryptableNotFound {
+                task_id,
+                decryptable_id,
+            })?;
 
         if !decryptable.should_contribute(user_id) {
             return Err(Error::UnexpectedDecryptionShare { user_id });
@@ -500,6 +501,7 @@ enum Visibility {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct Decryptable {
+    pub(crate) id: usize,
     vis: Visibility,
     pub(crate) word: Word,
     shares: HashMap<UserId, DecryptionShare>,
@@ -509,8 +511,9 @@ pub(crate) struct Decryptable {
 }
 
 impl Decryptable {
-    fn new(n_users: usize, word: Word, vis: Visibility) -> Self {
+    fn new(id: usize, n_users: usize, word: Word, vis: Visibility) -> Self {
         Self {
+            id,
             vis,
             word,
             shares: HashMap::default(),
@@ -538,18 +541,26 @@ impl Decryptable {
 
 pub(crate) struct DecryptableBuilder {
     n_users: usize,
+    next_id: usize,
 }
 
 impl DecryptableBuilder {
     pub(crate) fn new(n_users: usize) -> Self {
-        Self { n_users }
+        Self {
+            n_users,
+            next_id: 0,
+        }
     }
 
-    pub(crate) fn new_public(&self, word: Word) -> Decryptable {
-        Decryptable::new(self.n_users, word, Visibility::Public)
+    pub(crate) fn new_public(&mut self, word: Word) -> Decryptable {
+        let id = self.next_id;
+        self.next_id += 1;
+        Decryptable::new(id, self.n_users, word, Visibility::Public)
     }
 
-    pub(crate) fn new_designated(&self, word: Word, user_id: UserId) -> Decryptable {
-        Decryptable::new(self.n_users, word, Visibility::Designated(user_id))
+    pub(crate) fn new_designated(&mut self, word: Word, user_id: UserId) -> Decryptable {
+        let id = self.next_id;
+        self.next_id += 1;
+        Decryptable::new(id, self.n_users, word, Visibility::Designated(user_id))
     }
 }

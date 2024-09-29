@@ -158,7 +158,7 @@ async fn background_computation(ss: MutexServerStorage) {
         let ss = ss.lock().await;
         (ss.ps.clone(), ss.n_users)
     };
-    let builder = DecryptableBuilder::new(n_users);
+    let mut builder = DecryptableBuilder::new(n_users);
     loop {
         let task_to_process = {
             let mut ss = ss.lock().await;

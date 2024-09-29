@@ -152,7 +152,7 @@ impl SetupWallet {
             for (task_id, decryptable) in decryptables {
                 let share = self.pc.decrypt_share_bits(&decryptable.word);
                 self.rc
-                    .submit_decryption_share(task_id, 0, self.user_id, share)
+                    .submit_decryption_share(task_id, decryptable.id, self.user_id, share)
                     .await?;
             }
             tokio::time::sleep(Duration::from_secs(5)).await;
