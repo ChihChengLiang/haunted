@@ -460,8 +460,10 @@ impl Decryptable {
 
     fn add_decryption_share(&mut self, user_id: UserId, share: DecryptionShare) {
         self.shares.insert(user_id, share);
-        if self.shares.len() == self.n_users {
-            self.is_complete = true;
+
+        self.is_complete = match self.vis {
+            Visibility::Public => self.shares.len() == self.n_users,
+            Visibility::Designated(_) => self.shares.len() == self.n_users - 1,
         }
     }
 }
