@@ -110,43 +110,6 @@ async fn submit_bsks(
     Ok(Json(user_id))
 }
 
-/// The user submits the ciphertext
-#[post("/submit_decryption_shares", data = "<submission>", format = "msgpack")]
-async fn submit_decryption_shares(
-    submission: MsgPack<DecryptionShareSubmission>,
-    ss: &State<MutexServerStorage>,
-) -> Result<Json<UserId>, ErrorResponse> {
-    let DecryptionShareSubmission {
-        user_id,
-        decryption_shares,
-    } = submission.0;
-    let mut ss = ss.lock().await;
-    let ds = ss
-        .get_user(user_id)?
-        .storage
-        .get_mut_decryption_shares()
-        .ok_or(Error::OutputNotReady)?;
-    *ds = Some(decryption_shares);
-    Ok(Json(user_id))
-}
-
-#[get("/decryption_share/<output_id>/<user_id>")]
-async fn get_decryption_share(
-    output_id: usize,
-    user_id: UserId,
-    ss: &State<MutexServerStorage>,
-) -> Result<Json<AnnotatedDecryptionShare>, ErrorResponse> {
-    let mut ss: tokio::sync::MutexGuard<ServerStorage> = ss.lock().await;
-    let decryption_shares = ss
-        .get_user(user_id)?
-        .storage
-        .get_mut_decryption_shares()
-        .cloned()
-        .ok_or(Error::OutputNotReady)?
-        .ok_or(Error::DecryptionShareNotFound { output_id, user_id })?;
-    Ok(Json(decryption_shares[output_id].clone()))
-}
-
 /// Create a new task
 #[post("/create_task", data = "<submission>", format = "msgpack")]
 async fn create_task(
@@ -243,8 +206,6 @@ pub fn rocket(n_users: usize) -> Rocket<Build> {
             submit_pk_shares,
             get_aggregated_pk,
             submit_bsks,
-            submit_decryption_shares,
-            get_decryption_share,
             create_task,
             get_tasks_for_user,
             submit_task_input,
