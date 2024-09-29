@@ -187,7 +187,6 @@ pub(crate) struct ServerStorage {
     pub(crate) ps: PhantomServer<NoisyPrimeRing, NonNativePowerOfTwo>,
     pub(crate) state: ServerState,
     pub(crate) users: Vec<UserRecord>,
-    cipher_queues: Vec<VecDeque<Cipher>>,
     pub(crate) task_queue: VecDeque<Task>,
     pub(crate) next_task_id: TaskId,
 }
@@ -208,7 +207,6 @@ impl ServerStorage {
             ps: PhantomServer::new(param),
             state: ServerState::ReadyForJoining,
             users: vec![],
-            cipher_queues: vec![],
             task_queue: VecDeque::new(),
             next_task_id: 0,
         }
@@ -228,7 +226,6 @@ impl ServerStorage {
             id,
             storage: UserStorage::Empty,
         });
-        self.cipher_queues.push(VecDeque::new());
         id
     }
 
@@ -285,17 +282,6 @@ impl ServerStorage {
         }
         self.ps.aggregate_bs_key_shares::<PrimeRing>(&bsk_shares);
         Ok(bsk_shares)
-    }
-
-    pub(crate) fn is_ready_for_computation(&self) -> bool {
-        self.cipher_queues.iter().all(|queue| !queue.is_empty())
-    }
-
-    pub(crate) fn get_ciphers_for_computation(&mut self) -> Vec<Cipher> {
-        self.cipher_queues
-            .iter_mut()
-            .map(|queue| queue.pop_front().unwrap())
-            .collect()
     }
 
     pub(crate) fn create_task(
