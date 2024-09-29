@@ -32,7 +32,7 @@ pub enum TaskStatus {
     Done,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Task {
     pub id: TaskId,
     pub initiator: UserId,
@@ -398,6 +398,22 @@ pub(crate) struct CipherSubmission {
 
 #[derive(Serialize, Deserialize)]
 #[serde(crate = "rocket::serde")]
+pub(crate) struct CreateTaskSubmission {
+    pub(crate) initiator: UserId,
+    pub(crate) required_inputs: Vec<UserId>,
+    pub(crate) initiator_input: Cipher,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(crate = "rocket::serde")]
+pub(crate) struct TaskInputSubmission {
+    pub(crate) task_id: TaskId,
+    pub(crate) user_id: UserId,
+    pub(crate) input: Cipher,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(crate = "rocket::serde")]
 pub(crate) struct DecryptionShareSubmission {
     pub(crate) user_id: UserId,
     /// The user sends decryption share for each [`Word`].
@@ -406,13 +422,13 @@ pub(crate) struct DecryptionShareSubmission {
 
 pub type DecryptableID = usize;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 enum Visibility {
     Public,
     Designated(UserId),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct Decryptable {
     pub(crate) id: usize,
     vis: Visibility,

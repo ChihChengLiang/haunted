@@ -1,13 +1,13 @@
 use crate::phantom::{function_bit, Server as PhantomServer};
 use crate::types::{
-    AnnotatedDecryptionShare, BskShareSubmission, Cipher, CipherSubmission,
+    AnnotatedDecryptionShare, BskShareSubmission, Cipher, CipherSubmission, CreateTaskSubmission,
     DecryptionShareSubmission, Error, ErrorResponse, MutexServerStorage, ParamCRS,
-    PkShareSubmission, ServerState, ServerStorage, UserId, UserStorage,
+    PkShareSubmission, ServerState, ServerStorage, Task, TaskId, TaskInputSubmission, UserId,
+    UserStorage,
 };
 
 use itertools::Itertools;
 use phantom_zone_evaluator::boolean::fhew::param::I_4P;
-use phantom_zone_evaluator::boolean::fhew::prelude::{NoisyPrimeRing, NonNativePowerOfTwo};
 use phantom_zone_evaluator::boolean::FheBool;
 use rocket::serde::json::Json;
 use rocket::serde::msgpack::MsgPack;
@@ -17,22 +17,6 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::Mutex;
 use tokio::task;
-
-#[derive(Serialize, Deserialize)]
-#[serde(crate = "rocket::serde")]
-pub(crate) struct CreateTaskSubmission {
-    pub(crate) initiator: UserId,
-    pub(crate) required_inputs: Vec<UserId>,
-    pub(crate) initiator_input: Cipher,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(crate = "rocket::serde")]
-pub(crate) struct TaskInputSubmission {
-    pub(crate) task_id: TaskId,
-    pub(crate) user_id: UserId,
-    pub(crate) input: Cipher,
-}
 
 #[get("/param")]
 pub(crate) async fn get_param(ss: &State<MutexServerStorage>) -> Json<ParamCRS> {
