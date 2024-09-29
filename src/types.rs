@@ -75,6 +75,13 @@ impl Task {
         self.inputs.insert(user_id, input);
         Ok(())
     }
+
+    pub fn get_decryptables_for_user(&self, user_id: UserId) -> Vec<&Decryptable> {
+        self.decryptables
+            .iter()
+            .filter(|d| d.should_contribute(user_id) && !d.shares.contains_key(&user_id))
+            .collect()
+    }
 }
 
 #[derive(Debug, Error)]
@@ -99,6 +106,19 @@ pub(crate) enum Error {
     TaskNotFound { task_id: TaskId },
     #[error("Unexpected input from user #{user_id}")]
     UnexpectedInput { user_id: UserId },
+    #[error("Wrong task state for task #{task_id}: expected {expected:?}, got {got:?}")]
+    WrongTaskState {
+        task_id: TaskId,
+        expected: TaskStatus,
+        got: TaskStatus,
+    },
+    #[error("Decryptable #{decryptable_id} not found in task #{task_id}")]
+    DecryptableNotFound {
+        task_id: TaskId,
+        decryptable_id: usize,
+    },
+    #[error("Unexpected decryption share from user #{user_id}")]
+    UnexpectedDecryptionShare { user_id: UserId },
 }
 
 #[derive(Responder)]
@@ -338,6 +358,57 @@ impl ServerStorage {
             .find(|task| task.status == TaskStatus::ReadyToRun)
             .map(|task| task.id)
     }
+
+    pub fn get_decryptables_for_user(&self, user_id: UserId) -> Vec<(TaskId, &Decryptable)> {
+        self.task_queue
+            .iter()
+            .filter(|task| task.status == TaskStatus::WaitingDecryptionShares)
+            .flat_map(|task| {
+                task.get_decryptables_for_user(user_id)
+                    .into_iter()
+                    .map(move |d| (task.id, d))
+            })
+            .collect()
+    }
+
+    pub fn submit_decryption_share(
+        &mut self,
+        task_id: TaskId,
+        decryptable_id: usize,
+        user_id: UserId,
+        share: DecryptionShare,
+    ) -> Result<(), Error> {
+        let task = self.get_task(task_id)?;
+
+        if task.status != TaskStatus::WaitingDecryptionShares {
+            return Err(Error::WrongTaskState {
+                task_id,
+                expected: TaskStatus::WaitingDecryptionShares,
+                got: task.status.clone(),
+            });
+        }
+
+        let decryptable =
+            task.decryptables
+                .get_mut(decryptable_id)
+                .ok_or(Error::DecryptableNotFound {
+                    task_id,
+                    decryptable_id,
+                })?;
+
+        if !decryptable.should_contribute(user_id) {
+            return Err(Error::UnexpectedDecryptionShare { user_id });
+        }
+
+        decryptable.add_decryption_share(user_id, share);
+
+        // Check if the task is complete
+        if task.decryptables.iter().all(|d| d.is_complete) {
+            task.status = TaskStatus::Done;
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -415,9 +486,10 @@ pub(crate) struct TaskInputSubmission {
 #[derive(Serialize, Deserialize)]
 #[serde(crate = "rocket::serde")]
 pub(crate) struct DecryptionShareSubmission {
+    pub(crate) task_id: TaskId,
+    pub(crate) decryptable_id: usize,
     pub(crate) user_id: UserId,
-    /// The user sends decryption share for each [`Word`].
-    pub(crate) decryption_shares: Vec<AnnotatedDecryptionShare>,
+    pub(crate) share: DecryptionShare,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

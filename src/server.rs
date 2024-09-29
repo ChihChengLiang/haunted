@@ -196,6 +196,37 @@ async fn background_computation(ss: MutexServerStorage) {
     }
 }
 
+#[get("/decryptables/<user_id>")]
+async fn get_decryptables_for_user(
+    user_id: UserId,
+    ss: &State<MutexServerStorage>,
+) -> Result<Json<Vec<(TaskId, Decryptable)>>, ErrorResponse> {
+    let ss = ss.lock().await;
+    let decryptables = ss.get_decryptables_for_user(user_id);
+    Ok(Json(
+        decryptables
+            .into_iter()
+            .map(|(tid, d)| (tid, d.clone()))
+            .collect(),
+    ))
+}
+
+#[post("/submit_decryption_share", data = "<submission>", format = "msgpack")]
+async fn submit_decryption_share(
+    submission: MsgPack<DecryptionShareSubmission>,
+    ss: &State<MutexServerStorage>,
+) -> Result<Json<()>, ErrorResponse> {
+    let mut ss = ss.lock().await;
+    let DecryptionShareSubmission {
+        task_id,
+        decryptable_id,
+        user_id,
+        share,
+    } = submission.0;
+    ss.submit_decryption_share(task_id, decryptable_id, user_id, share)?;
+    Ok(Json(()))
+}
+
 pub fn rocket(n_users: usize) -> Rocket<Build> {
     let param = I_4P;
     let ss = MutexServerStorage::new(Mutex::new(ServerStorage::new(param, n_users)));
@@ -212,6 +243,8 @@ pub fn rocket(n_users: usize) -> Rocket<Build> {
             create_task,
             get_tasks_for_user,
             submit_task_input,
+            get_decryptables_for_user,
+            submit_decryption_share,
         ],
     )
 }
