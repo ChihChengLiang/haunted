@@ -194,7 +194,8 @@ async fn background_computation(
         let g: FheBool<_> = function_bit(&a, &b, &c, &d);
         // For now, we'll just simulate a computation by waiting and returning the input
         // Should be decryptables
-        let result = ps.serialize_cts_bits(&[vec![g]]);
+        let g = ps.serialize_cts_bits(&[g]);
+        let result = vec![g.clone(), g];
 
         // Send the result
         if let Err(e) = output_sender.send(result).await {
