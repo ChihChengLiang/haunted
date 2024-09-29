@@ -2,7 +2,7 @@ use crate::{
     phantom::Client as PhantomClient,
     server::*,
     types::{
-        AnnotatedDecryptionShare, BskShareSubmission, CipherSubmission, Decryptable,
+        AnnotatedDecryptionShare, BskShareSubmission, Cipher, CipherSubmission, Decryptable,
         DecryptionShareSubmission, ParamCRS, PkShareSubmission, ServerState, UserId,
     },
 };
@@ -190,14 +190,6 @@ impl SetupWallet {
             .post_msgpack(&uri!(submit_cipher).to_string(), &submission)
             .await?;
         Ok(())
-    }
-
-    pub async fn get_computation_result(&self) -> Result<Option<Vec<Cipher>>, Error> {
-        match self.rc.get::<Vec<Cipher>>("/computation_result").await {
-            Ok(result) => Ok(Some(result)),
-            Err(e) if e.to_string().contains("not ready") => Ok(None),
-            Err(e) => Err(e),
-        }
     }
 }
 

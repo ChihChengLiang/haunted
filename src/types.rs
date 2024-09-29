@@ -38,6 +38,8 @@ pub(crate) enum Error {
     DecryptionShareNotFound { output_id: usize, user_id: UserId },
     #[error("Output not ready")]
     OutputNotReady,
+    #[error("ComputatoinError: {reason}")]
+    ComputationErr { reason: String },
 }
 
 #[derive(Responder)]
@@ -51,9 +53,9 @@ pub(crate) enum ErrorResponse {
 impl From<Error> for ErrorResponse {
     fn from(error: Error) -> Self {
         match error {
-            Error::WrongServerState { .. } | Error::CipherNotFound { .. } => {
-                ErrorResponse::ServerError(error.to_string())
-            }
+            Error::WrongServerState { .. }
+            | Error::CipherNotFound { .. }
+            | Error::ComputationErr { .. } => ErrorResponse::ServerError(error.to_string()),
             Error::PkShareNotFound { .. }
             | Error::BskShareNotFound { .. }
             | Error::DecryptionShareNotFound { .. }
@@ -202,7 +204,10 @@ impl ServerStorage {
     }
 
     pub(crate) fn accept_cipher(&mut self, user_id: UserId, cipher: Cipher) -> Result<(), Error> {
-        self.cipher_queues.get_mut(user_id).ok_or(Error::UnregisteredUser { user_id })?.push_back(cipher);
+        self.cipher_queues
+            .get_mut(user_id)
+            .ok_or(Error::UnregisteredUser { user_id })?
+            .push_back(cipher);
         Ok(())
     }
 
@@ -211,7 +216,10 @@ impl ServerStorage {
     }
 
     pub(crate) fn get_ciphers_for_computation(&mut self) -> Vec<Cipher> {
-        self.cipher_queues.iter_mut().map(|queue| queue.pop_front().unwrap()).collect()
+        self.cipher_queues
+            .iter_mut()
+            .map(|queue| queue.pop_front().unwrap())
+            .collect()
     }
 }
 

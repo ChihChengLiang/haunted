@@ -160,8 +160,10 @@ async fn submit_cipher(
 
         // Send ciphers to the background computation task
         if let Err(e) = channels.input_sender.send(ciphers).await {
-            eprintln!("Failed to send ciphers for computation: {}", e);
-            return Err(ErrorResponse::internal_error());
+            return Err(Error::ComputationErr {
+                reason: e.to_string(),
+            }
+            .into());
         }
     }
 
@@ -176,11 +178,14 @@ pub struct ComputationChannels {
 async fn background_computation(
     mut input_receiver: mpsc::Receiver<Vec<Cipher>>,
     output_sender: mpsc::Sender<Vec<Cipher>>,
-    ps: &PhantomServer<NoisyPrimeRing, NonNativePowerOfTwo>,
+    ss: Arc<MutexServerStorage>,
 ) {
     while let Some(ciphers) = input_receiver.recv().await {
         // Perform the FHE computation here
         println!("Performing computation on {} ciphers", ciphers.len());
+
+        let ss = ss.lock().await;
+        let ps = &ss.ps;
 
         let deserialized_cts = ciphers
             .iter()
@@ -204,17 +209,6 @@ async fn background_computation(
     }
 }
 
-#[get("/computation_result")]
-async fn get_computation_result(
-    channels: &State<Arc<ComputationChannels>>,
-) -> Result<Json<Vec<Cipher>>, ErrorResponse> {
-    match channels.output_receiver.try_recv() {
-        Ok(result) => Ok(Json(result)),
-        Err(mpsc::error::TryRecvError::Empty) => Err(ErrorResponse::not_ready()),
-        Err(_) => Err(ErrorResponse::internal_error()),
-    }
-}
-
 pub fn rocket(n_users: usize) -> Rocket<Build> {
     let param = I_4P;
     let (input_sender, input_receiver) = mpsc::channel(100);
@@ -225,17 +219,19 @@ pub fn rocket(n_users: usize) -> Rocket<Build> {
         output_receiver,
     };
 
+    let ss = Arc::new(MutexServerStorage::new(Mutex::new(ServerStorage::new(
+        param, n_users,
+    ))));
+
     // Spawn the background computation task
     task::spawn(background_computation(
         input_receiver,
         output_sender,
-        param.clone(),
+        ss.clone(),
     ));
 
     rocket::build()
-        .manage(MutexServerStorage::new(Mutex::new(ServerStorage::new(
-            param, n_users,
-        ))))
+        .manage(ss)
         .manage(Arc::new(computation_channels))
         .mount(
             "/",
@@ -249,7 +245,6 @@ pub fn rocket(n_users: usize) -> Rocket<Build> {
                 submit_decryption_shares,
                 get_decryption_share,
                 submit_cipher,
-                get_computation_result,
             ],
         )
 }
