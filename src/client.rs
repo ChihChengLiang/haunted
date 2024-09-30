@@ -92,7 +92,7 @@ impl Wallet {
 
 pub struct SetupWallet {
     rc: ProductionClient,
-    user_id: UserId,
+    pub(crate) user_id: UserId,
     pc: PhantomClient<PrimeRing, NonNativePowerOfTwo>,
     tasks: HashMap<TaskId, TaskStatus>,
 }
@@ -202,8 +202,9 @@ impl SetupWallet {
             println!("Decrypted plain {:?}", plain);
         }
     }
-
-    // Implement other helper methods...
+    pub fn get_task(&self, task_id: &TaskId) -> Option<&TaskStatus> {
+        self.tasks.get(task_id)
+    }
 }
 
 #[derive(Debug, Clone)]
