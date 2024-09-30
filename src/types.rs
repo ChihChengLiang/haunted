@@ -303,13 +303,8 @@ impl ServerStorage {
             .ok_or(Error::TaskNotFound { task_id })
     }
 
-    pub(crate) fn get_tasks_for_user(&self, user_id: UserId) -> Vec<&Task> {
-        self.task_queue
-            .iter()
-            .filter(|task| {
-                task.required_inputs.contains(&user_id) && !task.inputs.contains_key(&user_id)
-            })
-            .collect()
+    pub(crate) fn get_tasks_for_user(&self, _user_id: UserId) -> Vec<&Task> {
+        self.task_queue.iter().collect()
     }
 
     pub(crate) fn add_input_to_task(

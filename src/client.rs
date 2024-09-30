@@ -201,7 +201,7 @@ impl SetupWallet {
                     self.pc.decrypt_bits(&decryptable.word, &all_shares)
                 }
             };
-            println!("Decrypted plain {:?}", plain.len());
+            println!("User {} Decrypted plain {:?}", self.user_id, plain);
         }
     }
     pub fn get_task(&self, task_id: &TaskId) -> Option<&TaskStatus> {
