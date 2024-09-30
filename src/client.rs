@@ -187,7 +187,8 @@ impl ProductionClient {
         }
     }
 
-    fn path(&self, path: &str) -> String {
+    fn path(&self, path: impl ToString) -> String {
+        let path = path.to_string();
         println!("{}", path);
         format!("{}/{}", self.url, path)
     }
@@ -206,7 +207,7 @@ impl ProductionClient {
 
     async fn get<T: Send + for<'de> Deserialize<'de> + 'static>(
         &self,
-        path: &str,
+        path: impl ToString,
     ) -> Result<T, Error> {
         let response = self.client.get(self.path(path)).send().await?;
         Self::handle_response(response).await
@@ -214,7 +215,7 @@ impl ProductionClient {
 
     async fn post_nobody<T: Send + for<'de> Deserialize<'de> + 'static>(
         &self,
-        path: &str,
+        path: impl ToString,
     ) -> Result<T, Error> {
         let response = self.client.post(self.path(path)).send().await?;
         Self::handle_response(response).await
@@ -222,7 +223,7 @@ impl ProductionClient {
 
     async fn post<T: Send + for<'de> Deserialize<'de> + 'static>(
         &self,
-        path: &str,
+        path: impl ToString,
         body: Vec<u8>,
     ) -> Result<T, Error> {
         let response = self.client.post(self.path(path)).body(body).send().await?;
@@ -230,7 +231,7 @@ impl ProductionClient {
     }
     async fn post_msgpack<T: Send + for<'de> Deserialize<'de> + 'static>(
         &self,
-        path: &str,
+        path: impl ToString,
         body: &impl Serialize,
     ) -> Result<T, Error> {
         let body = msgpack::to_compact_vec(body)?;
@@ -248,15 +249,15 @@ impl ProductionClient {
     }
 
     pub async fn get_param_crs(&self) -> Result<ParamCRS, Error> {
-        self.get(&uri!(get_param).to_string()).await
+        self.get(uri!(get_param)).await
     }
 
     pub async fn register(&self) -> Result<UserId, Error> {
-        self.post_nobody(&uri!(register).to_string()).await
+        self.post_nobody(uri!(register)).await
     }
 
     pub async fn get_status(&self) -> Result<ServerState, Error> {
-        self.get(&uri!(get_status).to_string()).await
+        self.get(uri!(get_status)).await
     }
 
     pub async fn submit_pk_shares(
@@ -265,19 +266,19 @@ impl ProductionClient {
         pk_share: Vec<u8>,
     ) -> Result<UserId, Error> {
         self.post_msgpack(
-            &uri!(submit_pk_shares).to_string(),
+            uri!(submit_pk_shares),
             &PkShareSubmission { user_id, pk_share },
         )
         .await
     }
 
     pub async fn get_aggregated_pk(&self) -> Result<Vec<u8>, Error> {
-        self.get(&uri!(get_aggregated_pk).to_string()).await
+        self.get(uri!(get_aggregated_pk)).await
     }
 
     pub async fn submit_bsks(&self, user_id: UserId, bsk_share: Vec<u8>) -> Result<UserId, Error> {
         self.post_msgpack(
-            &uri!(submit_bsks).to_string(),
+            uri!(submit_bsks),
             &BskShareSubmission { user_id, bsk_share },
         )
         .await
@@ -290,7 +291,7 @@ impl ProductionClient {
         initiator_input: Cipher,
     ) -> Result<TaskId, Error> {
         self.post_msgpack(
-            &uri!(create_task).to_string(),
+            uri!(create_task),
             &CreateTaskSubmission {
                 initiator,
                 required_inputs,
@@ -301,8 +302,7 @@ impl ProductionClient {
     }
 
     pub async fn get_tasks_for_user(&self, user_id: UserId) -> Result<Vec<Task>, Error> {
-        self.get(&uri!(get_tasks_for_user(user_id)).to_string())
-            .await
+        self.get(uri!(get_tasks_for_user(user_id))).await
     }
 
     pub async fn submit_task_input(
@@ -312,7 +312,7 @@ impl ProductionClient {
         input: Cipher,
     ) -> Result<(), Error> {
         self.post_msgpack(
-            &uri!(submit_task_input).to_string(),
+            uri!(submit_task_input),
             &TaskInputSubmission {
                 task_id,
                 user_id,
@@ -326,8 +326,7 @@ impl ProductionClient {
         &self,
         user_id: UserId,
     ) -> Result<Vec<(TaskId, Decryptable)>, Error> {
-        self.get(&uri!(get_decryptables_for_user(user_id)).to_string())
-            .await
+        self.get(uri!(get_decryptables_for_user(user_id))).await
     }
 
     pub async fn submit_decryption_share(
@@ -338,7 +337,7 @@ impl ProductionClient {
         share: Vec<u8>,
     ) -> Result<(), Error> {
         self.post_msgpack(
-            &uri!(submit_decryption_share).to_string(),
+            uri!(submit_decryption_share),
             &DecryptionShareSubmission {
                 task_id,
                 decryptable_id,
