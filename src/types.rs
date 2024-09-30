@@ -1,11 +1,10 @@
 use crate::phantom::Server as PhantomServer;
-use itertools::Itertools;
 use phantom_zone_evaluator::boolean::fhew::prelude::*;
 use rand::rngs::StdRng;
 use rocket::serde::{Deserialize, Serialize};
 use rocket::tokio::sync::Mutex;
 use rocket::Responder;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt::Display;
 use std::fmt::{self, Debug};
 use std::sync::Arc;
@@ -15,10 +14,103 @@ pub type UserId = usize;
 /// Decryption share for a word from one user.
 pub type DecryptionShare = Vec<u8>;
 pub type Word = Vec<u8>;
-/// Decryption share with output id
-pub type AnnotatedDecryptionShare = (usize, DecryptionShare);
 pub type ServerKeyShare = Vec<u8>;
 pub type ParamCRS = (FhewBoolMpiParam, FhewBoolMpiCrs<StdRng>);
+pub type Cipher = Vec<u8>;
+
+pub type TaskId = usize;
+
+/// Represents the current state of a task.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum TaskStatus {
+    /// Task is waiting for input from required users
+    WaitingForInput,
+    /// All inputs received, task is ready to be processed
+    ReadyToRun,
+    /// Task is currently being processed
+    Running,
+    /// Computation complete, waiting for decryption shares
+    WaitingDecryptionShares,
+    /// Task is fully complete and results are available
+    Done,
+}
+
+/// Represents a FHE computation task for the server to perform
+///
+/// A task is created by an initiator. It goes through these stages:
+/// - Waiting for the inputs from other users
+/// - Waiting for the server to run the actual computation
+/// - Waiting for users to contribute decryption shares to the computation outputs
+/// - The users can decrypt the comutation outputs from the completed task.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Task {
+    pub id: TaskId,
+    pub initiator: UserId,
+    /// List of user IDs required to provide input for this task
+    pub required_inputs: Vec<UserId>,
+    pub status: TaskStatus,
+    /// Collected inputs from users, keyed by user ID
+    pub inputs: HashMap<UserId, Cipher>,
+    /// Decryptables generated as a result of the task computation
+    pub decryptables: Vec<Decryptable>,
+}
+
+impl Task {
+    pub fn new(
+        id: TaskId,
+        initiator: UserId,
+        required_inputs: Vec<UserId>,
+        initiator_input: Cipher,
+    ) -> Self {
+        let mut inputs = HashMap::new();
+        inputs.insert(initiator, initiator_input);
+        Self {
+            id,
+            initiator,
+            required_inputs,
+            status: TaskStatus::WaitingForInput,
+            inputs,
+            decryptables: Vec::new(),
+        }
+    }
+
+    pub fn is_ready_to_run(&self) -> bool {
+        self.required_inputs
+            .iter()
+            .all(|user_id| self.inputs.contains_key(user_id))
+    }
+
+    pub fn add_input(&mut self, user_id: UserId, input: Cipher) -> Result<(), Error> {
+        if !self.required_inputs.contains(&user_id) {
+            return Err(Error::UnexpectedInput { user_id });
+        }
+        self.inputs.insert(user_id, input);
+        Ok(())
+    }
+
+    pub fn get_decryptables_for_user(&self, user_id: UserId) -> Vec<&Decryptable> {
+        self.decryptables
+            .iter()
+            .filter(|d| d.should_contribute(user_id) && !d.shares.contains_key(&user_id))
+            .collect()
+    }
+}
+
+impl fmt::Debug for Task {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Task")
+            .field("id", &self.id)
+            .field("initiator", &self.initiator)
+            .field("required_inputs", &self.required_inputs)
+            .field("status", &self.status)
+            .field("inputs", &format!("{} inputs", self.inputs.len()))
+            .field(
+                "decryptables",
+                &format!("{} decryptables", self.decryptables.len()),
+            )
+            .finish()
+    }
+}
 
 #[derive(Debug, Error)]
 pub(crate) enum Error {
@@ -30,12 +122,23 @@ pub(crate) enum Error {
     PkShareNotFound { user_id: UserId },
     #[error("The bootstrap key share from user #{user_id} not found")]
     BskShareNotFound { user_id: UserId },
-    #[error("The ciphertext from user #{user_id} not found")]
-    CipherNotFound { user_id: UserId },
-    #[error("Decryption share of {output_id} from user {user_id} not found")]
-    DecryptionShareNotFound { output_id: usize, user_id: UserId },
-    #[error("Output not ready")]
-    OutputNotReady,
+    #[error("Task #{task_id} not found")]
+    TaskNotFound { task_id: TaskId },
+    #[error("Unexpected input from user #{user_id}")]
+    UnexpectedInput { user_id: UserId },
+    #[error("Wrong task state for task #{task_id}: expected {expected:?}, got {got:?}")]
+    WrongTaskState {
+        task_id: TaskId,
+        expected: TaskStatus,
+        got: TaskStatus,
+    },
+    #[error("Decryptable #{decryptable_id} not found in task #{task_id}")]
+    DecryptableNotFound {
+        task_id: TaskId,
+        decryptable_id: usize,
+    },
+    #[error("Unexpected decryption share from user #{user_id}")]
+    UnexpectedDecryptionShare { user_id: UserId },
 }
 
 #[derive(Responder)]
@@ -49,14 +152,11 @@ pub(crate) enum ErrorResponse {
 impl From<Error> for ErrorResponse {
     fn from(error: Error) -> Self {
         match error {
-            Error::WrongServerState { .. } | Error::CipherNotFound { .. } => {
-                ErrorResponse::ServerError(error.to_string())
-            }
+            Error::WrongServerState { .. } => ErrorResponse::ServerError(error.to_string()),
             Error::PkShareNotFound { .. }
             | Error::BskShareNotFound { .. }
-            | Error::DecryptionShareNotFound { .. }
-            | Error::UnregisteredUser { .. }
-            | Error::OutputNotReady => ErrorResponse::NotFoundError(error.to_string()),
+            | Error::UnregisteredUser { .. } => ErrorResponse::NotFoundError(error.to_string()),
+            _ => ErrorResponse::ServerError(error.to_string()),
         }
     }
 }
@@ -69,11 +169,8 @@ pub enum ServerState {
     ReadyForPkShares,
     /// Ready for bootstrap key shares
     ReadyForBskShares,
-    /// We can now accept ciphertexts, which depends on the number of users.
+    /// We can now accept ciphertexts
     ReadyForInputs,
-    ReadyForRunning,
-    RunningFhe,
-    CompletedFhe,
 }
 
 impl ServerState {
@@ -102,10 +199,12 @@ pub(crate) type MutexServerStorage = Arc<Mutex<ServerStorage>>;
 
 pub(crate) struct ServerStorage {
     /// Close registration when this number is reached
-    n_users: usize,
+    pub(crate) n_users: usize,
     pub(crate) ps: PhantomServer<NoisyPrimeRing, NonNativePowerOfTwo>,
     pub(crate) state: ServerState,
     pub(crate) users: Vec<UserRecord>,
+    pub(crate) task_queue: VecDeque<Task>,
+    pub(crate) next_task_id: TaskId,
 }
 
 impl fmt::Debug for ServerStorage {
@@ -124,6 +223,8 @@ impl ServerStorage {
             ps: PhantomServer::new(param),
             state: ServerState::ReadyForJoining,
             users: vec![],
+            task_queue: VecDeque::new(),
+            next_task_id: 0,
         }
     }
 
@@ -190,13 +291,125 @@ impl ServerStorage {
         for (user_id, user) in self.users.iter_mut().enumerate() {
             if let Some(bsk_share) = user.storage.get_bsk_share() {
                 bsk_shares.push(bsk_share.clone());
-                user.storage = UserStorage::DecryptionShare(None);
             } else {
                 return Err(Error::BskShareNotFound { user_id });
             }
         }
         self.ps.aggregate_bs_key_shares::<PrimeRing>(&bsk_shares);
         Ok(bsk_shares)
+    }
+
+    pub(crate) fn create_task(
+        &mut self,
+        initiator: UserId,
+        required_inputs: Vec<UserId>,
+        initiator_input: Cipher,
+    ) -> TaskId {
+        let task_id = self.next_task_id;
+        self.next_task_id += 1;
+        let task = Task::new(task_id, initiator, required_inputs, initiator_input);
+        self.task_queue.push_back(task);
+        task_id
+    }
+
+    pub(crate) fn get_task(&mut self, task_id: TaskId) -> Result<&mut Task, Error> {
+        self.task_queue
+            .iter_mut()
+            .find(|task| task.id == task_id)
+            .ok_or(Error::TaskNotFound { task_id })
+    }
+
+    pub(crate) fn get_tasks_for_user(&self, _user_id: UserId) -> Vec<&Task> {
+        self.task_queue.iter().collect()
+    }
+
+    pub(crate) fn add_input_to_task(
+        &mut self,
+        task_id: TaskId,
+        user_id: UserId,
+        input: Cipher,
+    ) -> Result<(), Error> {
+        let task = self.get_task(task_id)?;
+        task.add_input(user_id, input)?;
+        if task.is_ready_to_run() {
+            task.status = TaskStatus::ReadyToRun;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn complete_task(
+        &mut self,
+        task_id: TaskId,
+        decryptables: Vec<Decryptable>,
+    ) -> Result<(), Error> {
+        let task = self.get_task(task_id)?;
+        task.decryptables = decryptables;
+        task.status = TaskStatus::WaitingDecryptionShares;
+        Ok(())
+    }
+
+    pub(crate) fn get_next_ready_task(&mut self) -> Option<TaskId> {
+        self.task_queue
+            .iter()
+            .find(|task| task.status == TaskStatus::ReadyToRun)
+            .map(|task| task.id)
+    }
+
+    pub fn get_decryptables_for_user(&self, user_id: UserId) -> Vec<(TaskId, &Decryptable)> {
+        self.task_queue
+            .iter()
+            .filter(|task| task.status == TaskStatus::WaitingDecryptionShares)
+            .flat_map(|task| {
+                task.get_decryptables_for_user(user_id)
+                    .into_iter()
+                    .map(move |d| (task.id, d))
+            })
+            .collect()
+    }
+
+    pub fn submit_decryption_share(
+        &mut self,
+        task_id: TaskId,
+        decryptable_id: usize,
+        user_id: UserId,
+        share: DecryptionShare,
+    ) -> Result<(), Error> {
+        let task = self.get_task(task_id)?;
+
+        println!(
+            "User {} submitted decryption share for task {} and decryptable id {}",
+            user_id, task_id, decryptable_id
+        );
+
+        if task.status != TaskStatus::WaitingDecryptionShares {
+            return Err(Error::WrongTaskState {
+                task_id,
+                expected: TaskStatus::WaitingDecryptionShares,
+                got: task.status.clone(),
+            });
+        }
+
+        let decryptable = task
+            .decryptables
+            .iter_mut()
+            .find(|d| d.id == decryptable_id)
+            .ok_or(Error::DecryptableNotFound {
+                task_id,
+                decryptable_id,
+            })?;
+
+        if !decryptable.should_contribute(user_id) {
+            return Err(Error::UnexpectedDecryptionShare { user_id });
+        }
+
+        decryptable.add_decryption_share(user_id, share);
+
+        // Check if the task is complete
+        if task.decryptables.iter().all(|d| d.is_complete) {
+            task.status = TaskStatus::Done;
+        }
+
+        Ok(())
     }
 }
 
@@ -211,7 +424,6 @@ pub(crate) enum UserStorage {
     Empty,
     PkShare(Vec<u8>),
     BskShare(Box<Vec<u8>>),
-    DecryptionShare(Option<Vec<AnnotatedDecryptionShare>>),
 }
 
 impl UserStorage {
@@ -221,19 +433,7 @@ impl UserStorage {
             _ => None,
         }
     }
-
-    pub(crate) fn get_mut_decryption_shares(
-        &mut self,
-    ) -> Option<&mut Option<Vec<AnnotatedDecryptionShare>>> {
-        match self {
-            Self::DecryptionShare(ds) => Some(ds),
-            _ => None,
-        }
-    }
 }
-
-/// ([`Word`] index, user_id) -> decryption share
-pub type DecryptionSharesMap = HashMap<(usize, UserId), DecryptionShare>;
 
 #[derive(Serialize, Deserialize)]
 #[serde(crate = "rocket::serde")]
@@ -251,24 +451,46 @@ pub(crate) struct BskShareSubmission {
 
 #[derive(Serialize, Deserialize)]
 #[serde(crate = "rocket::serde")]
-pub(crate) struct DecryptionShareSubmission {
+pub(crate) struct CipherSubmission {
     pub(crate) user_id: UserId,
-    /// The user sends decryption share for each [`Word`].
-    pub(crate) decryption_shares: Vec<AnnotatedDecryptionShare>,
+    pub(crate) cipher: Vec<u8>,
 }
 
-pub type DecryptableID = usize;
+#[derive(Serialize, Deserialize)]
+#[serde(crate = "rocket::serde")]
+pub(crate) struct CreateTaskSubmission {
+    pub(crate) initiator: UserId,
+    pub(crate) required_inputs: Vec<UserId>,
+    pub(crate) initiator_input: Cipher,
+}
 
-#[derive(Debug, Serialize, Deserialize)]
-enum Visibility {
+#[derive(Serialize, Deserialize)]
+#[serde(crate = "rocket::serde")]
+pub(crate) struct TaskInputSubmission {
+    pub(crate) task_id: TaskId,
+    pub(crate) user_id: UserId,
+    pub(crate) input: Cipher,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(crate = "rocket::serde")]
+pub(crate) struct DecryptionShareSubmission {
+    pub(crate) task_id: TaskId,
+    pub(crate) decryptable_id: usize,
+    pub(crate) user_id: UserId,
+    pub(crate) share: DecryptionShare,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub(crate) enum Visibility {
     Public,
     Designated(UserId),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct Decryptable {
     pub(crate) id: usize,
-    vis: Visibility,
+    pub(crate) vis: Visibility,
     pub(crate) word: Word,
     shares: HashMap<UserId, DecryptionShare>,
     n_users: usize,
@@ -295,50 +517,42 @@ impl Decryptable {
         }
     }
 
+    pub(crate) fn get_shares(&self) -> Vec<DecryptionShare> {
+        self.shares.values().cloned().collect()
+    }
+
     fn add_decryption_share(&mut self, user_id: UserId, share: DecryptionShare) {
         self.shares.insert(user_id, share);
-        if self.shares.len() == self.n_users {
-            self.is_complete = true;
+
+        self.is_complete = match self.vis {
+            Visibility::Public => self.shares.len() == self.n_users,
+            Visibility::Designated(_) => self.shares.len() == self.n_users - 1,
         }
     }
 }
 
-pub(crate) struct DecryptableManager {
+pub(crate) struct DecryptableBuilder {
     n_users: usize,
-    decryptables: Vec<Decryptable>,
+    next_id: usize,
 }
 
-impl DecryptableManager {
+impl DecryptableBuilder {
     pub(crate) fn new(n_users: usize) -> Self {
         Self {
             n_users,
-            decryptables: vec![],
+            next_id: 0,
         }
     }
-    fn add_decryptable(&mut self, word: Word, vis: Visibility) -> DecryptableID {
-        let id = self.decryptables.len();
-        let d = Decryptable::new(id, self.n_users, word, vis);
-        self.decryptables.push(d);
-        id
+
+    pub(crate) fn new_public(&mut self, word: Word) -> Decryptable {
+        let id = self.next_id;
+        self.next_id += 1;
+        Decryptable::new(id, self.n_users, word, Visibility::Public)
     }
 
-    pub(crate) fn add_public(&mut self, word: Word) -> DecryptableID {
-        self.add_decryptable(word, Visibility::Public)
-    }
-
-    pub(crate) fn add_designated(&mut self, word: Word, user_id: UserId) -> DecryptableID {
-        self.add_decryptable(word, Visibility::Designated(user_id))
-    }
-
-    pub(crate) fn list_decryption_duties(&self, user_id: UserId) -> Vec<Word> {
-        self.decryptables
-            .iter()
-            .filter(|d| !d.is_complete)
-            .filter(|d| match d.vis {
-                Visibility::Public => true,
-                Visibility::Designated(designated_id) => user_id != designated_id,
-            })
-            .map(|d| d.word.clone())
-            .collect_vec()
+    pub(crate) fn new_designated(&mut self, word: Word, user_id: UserId) -> Decryptable {
+        let id = self.next_id;
+        self.next_id += 1;
+        Decryptable::new(id, self.n_users, word, Visibility::Designated(user_id))
     }
 }
