@@ -29,7 +29,7 @@ pub enum TaskStatus {
     Done,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Task {
     pub id: TaskId,
     pub initiator: UserId,
@@ -77,6 +77,22 @@ impl Task {
             .iter()
             .filter(|d| d.should_contribute(user_id) && !d.shares.contains_key(&user_id))
             .collect()
+    }
+}
+
+impl fmt::Debug for Task {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Task")
+            .field("id", &self.id)
+            .field("initiator", &self.initiator)
+            .field("required_inputs", &self.required_inputs)
+            .field("status", &self.status)
+            .field("inputs", &format!("{} inputs", self.inputs.len()))
+            .field(
+                "decryptables",
+                &format!("{} decryptables", self.decryptables.len()),
+            )
+            .finish()
     }
 }
 
@@ -305,7 +321,7 @@ impl ServerStorage {
         let task = self.get_task(task_id)?;
         task.add_input(user_id, input)?;
         if task.is_ready_to_run() {
-            task.status = TaskStatus::Running;
+            task.status = TaskStatus::ReadyToRun;
         }
         Ok(())
     }
@@ -348,6 +364,11 @@ impl ServerStorage {
         share: DecryptionShare,
     ) -> Result<(), Error> {
         let task = self.get_task(task_id)?;
+
+        println!(
+            "User {} submitted decryption share for task {} and decryptable id {}",
+            user_id, task_id, decryptable_id
+        );
 
         if task.status != TaskStatus::WaitingDecryptionShares {
             return Err(Error::WrongTaskState {

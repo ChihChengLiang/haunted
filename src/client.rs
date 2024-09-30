@@ -123,6 +123,7 @@ impl SetupWallet {
         loop {
             // Handle tasks (including input requests)
             let tasks = self.rc.get_tasks_for_user(self.user_id).await?;
+            println!("User {} tasks {:?}", self.user_id, tasks);
             for task in tasks {
                 self.handle_task(task).await?;
             }
@@ -177,7 +178,7 @@ impl SetupWallet {
     fn get_input_for_task(&self, _task_id: TaskId) -> Result<Vec<bool>, Error> {
         // Implement logic to get input for the task
         // This could involve user interaction or some predefined logic
-        Ok(vec![true, false, true]) // Example input
+        Ok(vec![true, false]) // Example input
     }
 
     fn process_completed_task(&self, task: Task) {
@@ -200,7 +201,7 @@ impl SetupWallet {
                     self.pc.decrypt_bits(&decryptable.word, &all_shares)
                 }
             };
-            println!("Decrypted plain {:?}", plain);
+            println!("Decrypted plain {:?}", plain.len());
         }
     }
     pub fn get_task(&self, task_id: &TaskId) -> Option<&TaskStatus> {

@@ -2,7 +2,7 @@ use crate::phantom::function_bit;
 use crate::types::{
     BskShareSubmission, CreateTaskSubmission, Decryptable, DecryptableBuilder,
     DecryptionShareSubmission, ErrorResponse, MutexServerStorage, ParamCRS, PkShareSubmission,
-    ServerState, ServerStorage, Task, TaskId, TaskInputSubmission, UserId, UserStorage,
+    ServerState, ServerStorage, Task, TaskId, TaskInputSubmission, TaskStatus, UserId, UserStorage,
 };
 
 use phantom_zone_evaluator::boolean::{fhew::param::I_4P, FheBool};
@@ -149,6 +149,7 @@ async fn submit_task_input(
 }
 
 async fn background_computation(ss: MutexServerStorage) {
+    println!("Spawned background computation");
     let (ps, n_users) = {
         let ss = ss.lock().await;
         (ss.ps.clone(), ss.n_users)
@@ -157,12 +158,14 @@ async fn background_computation(ss: MutexServerStorage) {
     loop {
         let task_to_process = {
             let mut ss = ss.lock().await;
+            println!("Task queue {:?}", ss.task_queue);
             ss.get_next_ready_task()
         };
 
         if let Some(task_id) = task_to_process {
             let mut ss = ss.lock().await;
             let task = ss.get_task(task_id).unwrap();
+            task.status = TaskStatus::Running;
 
             // Perform the FHE computation here
             println!("Performing computation for task {}", task_id);
@@ -186,7 +189,7 @@ async fn background_computation(ss: MutexServerStorage) {
             ss.complete_task(task_id, decryptables).unwrap();
         } else {
             // No tasks ready, sleep for a bit before checking again
-            sleep(Duration::from_millis(100)).await;
+            sleep(Duration::from_secs(5)).await;
         }
     }
 }
