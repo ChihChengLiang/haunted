@@ -480,7 +480,7 @@ pub(crate) struct DecryptionShareSubmission {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-enum Visibility {
+pub(crate) enum Visibility {
     Public,
     Designated(UserId),
 }
@@ -488,7 +488,7 @@ enum Visibility {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct Decryptable {
     pub(crate) id: usize,
-    vis: Visibility,
+    pub(crate) vis: Visibility,
     pub(crate) word: Word,
     shares: HashMap<UserId, DecryptionShare>,
     n_users: usize,
@@ -513,6 +513,10 @@ impl Decryptable {
             Visibility::Public => true,
             Visibility::Designated(id) => id != user_id,
         }
+    }
+
+    pub(crate) fn get_shares(&self) -> Vec<DecryptionShare> {
+        self.shares.values().cloned().collect()
     }
 
     fn add_decryption_share(&mut self, user_id: UserId, share: DecryptionShare) {

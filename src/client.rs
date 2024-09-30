@@ -4,7 +4,7 @@ use crate::{
     types::{
         AnnotatedDecryptionShare, BskShareSubmission, Cipher, CipherSubmission,
         CreateTaskSubmission, Decryptable, DecryptionShareSubmission, ParamCRS, PkShareSubmission,
-        ServerState, Task, TaskId, TaskInputSubmission, TaskStatus, UserId,
+        ServerState, Task, TaskId, TaskInputSubmission, TaskStatus, UserId, Visibility,
     },
 };
 
@@ -118,56 +118,89 @@ impl SetupWallet {
         Ok(task_id)
     }
 
-    pub async fn monitor_tasks(&mut self) -> Result<(), Error> {
+    pub async fn run_background_tasks(&mut self) -> Result<(), Error> {
         loop {
+            // Handle tasks (including input requests)
             let tasks = self.rc.get_tasks_for_user(self.user_id).await?;
             for task in tasks {
-                self.update_task_status(task);
+                self.handle_task(task).await?;
             }
-            tokio::time::sleep(Duration::from_secs(5)).await;
+
+            // Handle decryptable requests
+            let decryptables = self.rc.get_decryptables_for_user(self.user_id).await?;
+            for (task_id, decryptable) in decryptables {
+                self.handle_decryptable(task_id, decryptable).await?;
+            }
+
+            // Sleep for a short duration before the next iteration
+            sleep(Duration::from_secs(5)).await;
         }
     }
 
-    pub async fn handle_input_requests(&mut self) -> Result<(), Error> {
-        loop {
-            let tasks = self.rc.get_tasks_for_user(self.user_id).await?;
-            for task in tasks {
-                if task.status == TaskStatus::WaitingForInput
-                    && !task.inputs.contains_key(&self.user_id)
-                {
-                    let input = vec![true, true]; // Customize this
+    async fn handle_task(&mut self, task: Task) -> Result<(), Error> {
+        match task.status {
+            TaskStatus::WaitingForInput => {
+                if !task.inputs.contains_key(&self.user_id) {
+                    let input = self.get_input_for_task(task.id)?; // Implement this method
                     let cipher = self.pc.pk_encrypt_bit(input);
                     self.rc
                         .submit_task_input(task.id, self.user_id, cipher)
                         .await?;
                 }
             }
-            tokio::time::sleep(Duration::from_secs(5)).await;
-        }
-    }
-
-    pub async fn handle_decryptable_requests(&mut self) -> Result<(), Error> {
-        loop {
-            let decryptables = self.rc.get_decryptables_for_user(self.user_id).await?;
-            for (task_id, decryptable) in decryptables {
-                let share = self.pc.decrypt_share_bits(&decryptable.word);
-                self.rc
-                    .submit_decryption_share(task_id, decryptable.id, self.user_id, share)
-                    .await?;
+            TaskStatus::Done => {
+                self.process_completed_task(task);
             }
-            tokio::time::sleep(Duration::from_secs(5)).await;
+            _ => {
+                // Update local task status
+                self.tasks.insert(task.id, task.status);
+            }
         }
+        Ok(())
     }
 
-    fn update_task_status(&mut self, task: Task) {
-        self.tasks.insert(task.id, task.status.clone());
-        if task.status == TaskStatus::Done {
-            self.process_completed_task(task);
+    async fn handle_decryptable(
+        &self,
+        task_id: TaskId,
+        decryptable: Decryptable,
+    ) -> Result<(), Error> {
+        if decryptable.should_contribute(self.user_id) {
+            let share = self.pc.decrypt_share_bits(&decryptable.word);
+            self.rc
+                .submit_decryption_share(task_id, decryptable.id, self.user_id, share)
+                .await?;
         }
+        Ok(())
+    }
+
+    fn get_input_for_task(&self, task_id: TaskId) -> Result<Vec<bool>, Error> {
+        // Implement logic to get input for the task
+        // This could involve user interaction or some predefined logic
+        Ok(vec![true, false, true]) // Example input
     }
 
     fn process_completed_task(&self, task: Task) {
-        // Implement logic to retrieve and decrypt the final result
+        // Implement logic to handle completed tasks
+        println!("Task {} completed", task.id);
+        // You might want to decrypt the result here
+        for decryptable in task.decryptables.iter() {
+            let plain = match decryptable.vis {
+                Visibility::Public => self
+                    .pc
+                    .decrypt_bits(&decryptable.word, &decryptable.get_shares()),
+                Visibility::Designated(user_id) => {
+                    debug_assert_eq!(user_id, self.user_id);
+                    let my_share = self.pc.decrypt_share_bits(&decryptable.word);
+                    let all_shares = {
+                        let mut other_shares = decryptable.get_shares();
+                        other_shares.push(my_share);
+                        other_shares
+                    };
+                    self.pc.decrypt_bits(&decryptable.word, &all_shares)
+                }
+            };
+            println!("Decrypted plain {:?}", plain);
+        }
     }
 
     // Implement other helper methods...
