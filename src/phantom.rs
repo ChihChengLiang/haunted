@@ -369,7 +369,7 @@ fn deserialize_cts_bits<R: RingOps>(
     cts.iter().map(|ct| ct.uncompact(ring)).collect_vec()
 }
 
-trait BitOps<Rhs = Self, Output = Self>:
+pub(crate) trait BitOps<Rhs = Self, Output = Self>:
     BitAnd<Rhs, Output = Output> + BitOr<Rhs, Output = Output> + BitXor<Rhs, Output = Output>
 {
 }

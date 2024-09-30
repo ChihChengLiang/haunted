@@ -14,8 +14,6 @@ pub type UserId = usize;
 /// Decryption share for a word from one user.
 pub type DecryptionShare = Vec<u8>;
 pub type Word = Vec<u8>;
-/// Decryption share with output id
-pub type AnnotatedDecryptionShare = (usize, DecryptionShare);
 pub type ServerKeyShare = Vec<u8>;
 pub type ParamCRS = (FhewBoolMpiParam, FhewBoolMpiCrs<StdRng>);
 pub type Cipher = Vec<u8>;
@@ -92,14 +90,6 @@ pub(crate) enum Error {
     PkShareNotFound { user_id: UserId },
     #[error("The bootstrap key share from user #{user_id} not found")]
     BskShareNotFound { user_id: UserId },
-    #[error("The ciphertext from user #{user_id} not found")]
-    CipherNotFound { user_id: UserId },
-    #[error("Decryption share of {output_id} from user {user_id} not found")]
-    DecryptionShareNotFound { output_id: usize, user_id: UserId },
-    #[error("Output not ready")]
-    OutputNotReady,
-    #[error("ComputatoinError: {reason}")]
-    ComputationErr { reason: String },
     #[error("Task #{task_id} not found")]
     TaskNotFound { task_id: TaskId },
     #[error("Unexpected input from user #{user_id}")]
@@ -130,14 +120,10 @@ pub(crate) enum ErrorResponse {
 impl From<Error> for ErrorResponse {
     fn from(error: Error) -> Self {
         match error {
-            Error::WrongServerState { .. }
-            | Error::CipherNotFound { .. }
-            | Error::ComputationErr { .. } => ErrorResponse::ServerError(error.to_string()),
+            Error::WrongServerState { .. } => ErrorResponse::ServerError(error.to_string()),
             Error::PkShareNotFound { .. }
             | Error::BskShareNotFound { .. }
-            | Error::DecryptionShareNotFound { .. }
-            | Error::UnregisteredUser { .. }
-            | Error::OutputNotReady => ErrorResponse::NotFoundError(error.to_string()),
+            | Error::UnregisteredUser { .. } => ErrorResponse::NotFoundError(error.to_string()),
             _ => ErrorResponse::ServerError(error.to_string()),
         }
     }
@@ -273,7 +259,6 @@ impl ServerStorage {
         for (user_id, user) in self.users.iter_mut().enumerate() {
             if let Some(bsk_share) = user.storage.get_bsk_share() {
                 bsk_shares.push(bsk_share.clone());
-                user.storage = UserStorage::DecryptionShare(None);
             } else {
                 return Err(Error::BskShareNotFound { user_id });
             }
@@ -407,7 +392,6 @@ pub(crate) enum UserStorage {
     Empty,
     PkShare(Vec<u8>),
     BskShare(Box<Vec<u8>>),
-    DecryptionShare(Option<Vec<AnnotatedDecryptionShare>>),
 }
 
 impl UserStorage {
@@ -417,19 +401,7 @@ impl UserStorage {
             _ => None,
         }
     }
-
-    pub(crate) fn get_mut_decryption_shares(
-        &mut self,
-    ) -> Option<&mut Option<Vec<AnnotatedDecryptionShare>>> {
-        match self {
-            Self::DecryptionShare(ds) => Some(ds),
-            _ => None,
-        }
-    }
 }
-
-/// ([`Word`] index, user_id) -> decryption share
-pub type DecryptionSharesMap = HashMap<(usize, UserId), DecryptionShare>;
 
 #[derive(Serialize, Deserialize)]
 #[serde(crate = "rocket::serde")]

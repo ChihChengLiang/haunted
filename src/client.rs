@@ -174,7 +174,7 @@ impl SetupWallet {
         Ok(())
     }
 
-    fn get_input_for_task(&self, task_id: TaskId) -> Result<Vec<bool>, Error> {
+    fn get_input_for_task(&self, _task_id: TaskId) -> Result<Vec<bool>, Error> {
         // Implement logic to get input for the task
         // This could involve user interaction or some predefined logic
         Ok(vec![true, false, true]) // Example input
