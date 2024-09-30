@@ -20,22 +20,38 @@ pub type Cipher = Vec<u8>;
 
 pub type TaskId = usize;
 
+/// Represents the current state of a task.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum TaskStatus {
+    /// Task is waiting for input from required users
     WaitingForInput,
+    /// All inputs received, task is ready to be processed
     ReadyToRun,
+    /// Task is currently being processed
     Running,
+    /// Computation complete, waiting for decryption shares
     WaitingDecryptionShares,
+    /// Task is fully complete and results are available
     Done,
 }
 
+/// Represents a FHE computation task for the server to perform
+///
+/// A task is created by an initiator. It goes through these stages:
+/// - Waiting for the inputs from other users
+/// - Waiting for the server to run the actual computation
+/// - Waiting for users to contribute decryption shares to the computation outputs
+/// - The users can decrypt the comutation outputs from the completed task.
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Task {
     pub id: TaskId,
     pub initiator: UserId,
+    /// List of user IDs required to provide input for this task
     pub required_inputs: Vec<UserId>,
     pub status: TaskStatus,
+    /// Collected inputs from users, keyed by user ID
     pub inputs: HashMap<UserId, Cipher>,
+    /// Decryptables generated as a result of the task computation
     pub decryptables: Vec<Decryptable>,
 }
 

@@ -148,6 +148,11 @@ async fn submit_task_input(
     Ok(Json(()))
 }
 
+/// Performs the background computation for tasks.
+///
+/// This function continuously checks for ready tasks, processes them,
+/// and updates their status. It runs indefinitely until the server is shut down.
+///
 async fn background_computation(ss: MutexServerStorage) {
     println!("Spawned background computation");
     let (ps, n_users) = {

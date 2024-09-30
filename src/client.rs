@@ -99,6 +99,7 @@ pub struct SetupWallet {
 }
 
 impl SetupWallet {
+    /// Creates a new task on the server.
     pub async fn create_task(
         &mut self,
         required_inputs: Vec<UserId>,
@@ -119,6 +120,7 @@ impl SetupWallet {
         Ok(task_id)
     }
 
+    /// Runs background tasks for handling inputs and decryptables.
     pub async fn run_background_tasks(&mut self) -> Result<(), Error> {
         loop {
             // Handle tasks (including input requests)
