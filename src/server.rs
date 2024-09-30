@@ -1,21 +1,16 @@
-use crate::phantom::{function_bit, Server as PhantomServer};
+use crate::phantom::function_bit;
 use crate::types::{
-    AnnotatedDecryptionShare, BskShareSubmission, Cipher, CipherSubmission, CreateTaskSubmission,
-    Decryptable, DecryptableBuilder, DecryptionShareSubmission, Error, ErrorResponse,
-    MutexServerStorage, ParamCRS, PkShareSubmission, ServerState, ServerStorage, Task, TaskId,
-    TaskInputSubmission, UserId, UserStorage,
+    BskShareSubmission, CreateTaskSubmission, Decryptable, DecryptableBuilder,
+    DecryptionShareSubmission, ErrorResponse, MutexServerStorage, ParamCRS, PkShareSubmission,
+    ServerState, ServerStorage, Task, TaskId, TaskInputSubmission, UserId, UserStorage,
 };
 
-use itertools::Itertools;
-use phantom_zone_evaluator::boolean::fhew::param::I_4P;
-use phantom_zone_evaluator::boolean::FheBool;
+use phantom_zone_evaluator::boolean::{fhew::param::I_4P, FheBool};
 use rocket::serde::json::Json;
 use rocket::serde::msgpack::MsgPack;
-use rocket::{get, post, routes};
-use rocket::{Build, Rocket, State};
+use rocket::{get, post, routes, Build, Rocket, State};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
 use tokio::sync::Mutex;
 use tokio::task;
 use tokio::time::sleep;

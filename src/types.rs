@@ -1,7 +1,5 @@
 use crate::phantom::Server as PhantomServer;
-use itertools::Itertools;
 use phantom_zone_evaluator::boolean::fhew::prelude::*;
-use phantom_zone_evaluator::boolean::FheBool;
 use rand::rngs::StdRng;
 use rocket::serde::{Deserialize, Serialize};
 use rocket::tokio::sync::Mutex;
