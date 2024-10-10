@@ -1166,7 +1166,7 @@ checksum = "e3148f5046208a5d56bcfc03053e3ca6334e51da8dfb19b6cdc8b306fae3283e"
 [[package]]
 name = "phantom-zone-crypto"
 version = "0.1.0"
-source = "git+https://github.com/gausslabs/phantom-zone?rev=5232e55bfa811487438c34f745cf830b9b1f22d9#5232e55bfa811487438c34f745cf830b9b1f22d9"
+source = "git+https://github.com/han0110/phantom-zone?branch=rewrite/ring-packing#94e69d992d86b1c72a0fddcd585d9be39afd8815"
 dependencies = [
  "itertools",
  "num-traits",
@@ -1179,7 +1179,7 @@ dependencies = [
 [[package]]
 name = "phantom-zone-derive"
 version = "0.1.0"
-source = "git+https://github.com/gausslabs/phantom-zone?rev=5232e55bfa811487438c34f745cf830b9b1f22d9#5232e55bfa811487438c34f745cf830b9b1f22d9"
+source = "git+https://github.com/han0110/phantom-zone?branch=rewrite/ring-packing#94e69d992d86b1c72a0fddcd585d9be39afd8815"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1189,7 +1189,7 @@ dependencies = [
 [[package]]
 name = "phantom-zone-evaluator"
 version = "0.1.0"
-source = "git+https://github.com/gausslabs/phantom-zone?rev=5232e55bfa811487438c34f745cf830b9b1f22d9#5232e55bfa811487438c34f745cf830b9b1f22d9"
+source = "git+https://github.com/han0110/phantom-zone?branch=rewrite/ring-packing#94e69d992d86b1c72a0fddcd585d9be39afd8815"
 dependencies = [
  "itertools",
  "paste",
@@ -1203,7 +1203,7 @@ dependencies = [
 [[package]]
 name = "phantom-zone-math"
 version = "0.1.0"
-source = "git+https://github.com/gausslabs/phantom-zone?rev=5232e55bfa811487438c34f745cf830b9b1f22d9#5232e55bfa811487438c34f745cf830b9b1f22d9"
+source = "git+https://github.com/han0110/phantom-zone?branch=rewrite/ring-packing#94e69d992d86b1c72a0fddcd585d9be39afd8815"
 dependencies = [
  "bincode",
  "itertools",

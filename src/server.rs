@@ -1,10 +1,11 @@
-use crate::phantom::function_bit;
+use crate::phantom::{function_bit, PhantomOps};
 use crate::types::{
     BskShareSubmission, CreateTaskSubmission, Decryptable, DecryptableBuilder,
     DecryptionShareSubmission, ErrorResponse, MutexServerStorage, ParamCRS, PkShareSubmission,
     ServerState, ServerStorage, Task, TaskId, TaskInputSubmission, TaskStatus, UserId, UserStorage,
 };
 
+use itertools::Itertools;
 use phantom_zone_evaluator::boolean::{fhew::param::I_4P, FheBool};
 use rocket::serde::json::Json;
 use rocket::serde::msgpack::MsgPack;
@@ -40,8 +41,8 @@ async fn get_status(ss: &State<MutexServerStorage>) -> Result<Json<ServerState>,
 }
 
 /// The user submits Public Key shares
-#[post("/submit_pk_shares", data = "<submission>", format = "msgpack")]
-async fn submit_pk_shares(
+#[post("/submit_pk_and_rpk_shares", data = "<submission>", format = "msgpack")]
+async fn submit_pk_and_rpk_shares(
     submission: MsgPack<PkShareSubmission>,
     ss: &State<MutexServerStorage>,
 ) -> Result<Json<UserId>, ErrorResponse> {
@@ -49,13 +50,18 @@ async fn submit_pk_shares(
 
     ss.ensure(ServerState::ReadyForPkShares)?;
 
-    let PkShareSubmission { user_id, pk_share } = submission.0;
+    let PkShareSubmission {
+        user_id,
+        pk_share,
+        rpk_share,
+    } = submission.0;
 
     let user = ss.get_user(user_id)?;
-    user.storage = UserStorage::PkShare(pk_share);
+    user.storage = UserStorage::PkAndRpkShare(pk_share, rpk_share);
 
     if ss.check_pk_share_submission() {
         ss.aggregate_pk_shares()?;
+        ss.aggregate_rpk_shares()?;
         ss.transit(ServerState::ReadyForBskShares);
     }
 
@@ -70,7 +76,7 @@ async fn get_aggregated_pk(ss: &State<MutexServerStorage>) -> Result<Json<Vec<u8
     ss.ensure(ServerState::ReadyForBskShares)?;
 
     // Serialize the aggregated public key
-    let aggregated_pk = ss.ps.serialize_pk();
+    let aggregated_pk = ss.ps.serialize_pk()?;
 
     Ok(Json(aggregated_pk))
 }
@@ -178,8 +184,12 @@ async fn background_computation(ss: MutexServerStorage) {
             let inputs: Vec<Vec<FheBool<_>>> = task
                 .inputs
                 .values()
-                .map(|cipher| ps.deserialize_cts_bits(cipher))
-                .collect();
+                .map(|cipher| {
+                    ps.deserialize_batched_ct(cipher)
+                        .map(|ct| ps.wrap_batched_ct(&ct))
+                })
+                .try_collect()
+                .unwrap();
 
             let [user_1_input, user_2_input] = inputs.try_into().unwrap();
             let [a, b]: [FheBool<_>; 2] = user_1_input.try_into().unwrap();
@@ -187,7 +197,7 @@ async fn background_computation(ss: MutexServerStorage) {
             let g: FheBool<_> = function_bit(&a, &b, &c, &d);
             // For now, we'll just simulate a computation by waiting and returning the input
             // Should be decryptables
-            let g = ps.serialize_cts_bits(&[g]);
+            let g = ps.serialize_rp_ct(&ps.pack(&[g.into_ct()])).unwrap();
 
             // Create decryptables from the result
             let decryptables = vec![builder.new_public(g.clone()), builder.new_designated(g, 1)]; // Replace with actual decryptables
@@ -240,7 +250,7 @@ pub fn rocket(n_users: usize) -> Rocket<Build> {
             get_param,
             register,
             get_status,
-            submit_pk_shares,
+            submit_pk_and_rpk_shares,
             get_aggregated_pk,
             submit_bsks,
             create_task,
