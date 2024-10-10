@@ -1,5 +1,5 @@
 use crate::{
-    phantom::Client as PhantomClient,
+    phantom::{PhantomClient, PhantomOps, PhantomPrimeOps},
     server::*,
     types::{
         BskShareSubmission, Cipher, CreateTaskSubmission, Decryptable, DecryptionShareSubmission,
@@ -10,7 +10,8 @@ use crate::{
 
 use anyhow::{bail, Error};
 use indicatif::{ProgressBar, ProgressStyle};
-use phantom_zone_evaluator::boolean::fhew::prelude::{NonNativePowerOfTwo, PrimeRing};
+use itertools::Itertools;
+use rand::{rngs::StdRng, Rng, SeedableRng};
 use reqwest::{self, header::CONTENT_TYPE, Client};
 use rocket::{serde::msgpack, uri};
 use serde::{Deserialize, Serialize};
@@ -55,9 +56,17 @@ impl Wallet {
         bail!("Timed out waiting for server state: {:?}", desired_state)
     }
 
-    async fn acquire_pk(&self, user_id: UserId, pk_share: Vec<u8>) -> Result<Vec<u8>, Error> {
+    async fn acquire_pk(
+        &self,
+        user_id: UserId,
+        pk_share: Vec<u8>,
+        rpk_share: Vec<u8>,
+    ) -> Result<Vec<u8>, Error> {
         // Submit the public key share
-        let _: UserId = self.rc.submit_pk_shares(user_id, pk_share).await?;
+        let _: UserId = self
+            .rc
+            .submit_pk_shares(user_id, pk_share, rpk_share)
+            .await?;
         for _ in 0..10 {
             if let Ok(server_pk) = self.rc.get_aggregated_pk().await {
                 return Ok(server_pk);
@@ -73,14 +82,24 @@ impl Wallet {
     pub async fn run_setup(&self) -> Result<SetupWallet, Error> {
         let (param, crs) = self.rc.get_param_crs().await?;
         let user_id = self.rc.register().await?;
-        let mut pc = PhantomClient::<PrimeRing, NonNativePowerOfTwo>::new(param, crs, user_id);
+        let seed = StdRng::from_entropy().gen();
+        let mut pc =
+            PhantomClient::<PhantomPrimeOps>::new(param, crs, user_id, seed, None).unwrap();
         self.wait_for_server_state(ServerState::ReadyForPkShares)
             .await?;
-        let server_pk = self.acquire_pk(user_id, pc.pk_share_gen()).await?;
-        pc.receive_pk(&server_pk);
+        let server_pk = self
+            .acquire_pk(
+                user_id,
+                pc.serialize_pk_share(&pc.pk_share_gen())?,
+                pc.serialize_rp_key_share(&pc.rp_key_share_gen())?,
+            )
+            .await?;
+        pc.with_pk(pc.deserialize_pk(&server_pk)?);
         self.wait_for_server_state(ServerState::ReadyForBskShares)
             .await?;
-        self.rc.submit_bsks(user_id, pc.bs_key_share_gen()).await?;
+        self.rc
+            .submit_bsks(user_id, pc.serialize_bs_key_share(&pc.bs_key_share_gen())?)
+            .await?;
 
         Ok(SetupWallet {
             rc: self.rc.clone(),
@@ -94,7 +113,7 @@ impl Wallet {
 pub struct SetupWallet {
     rc: ProductionClient,
     pub(crate) user_id: UserId,
-    pc: PhantomClient<PrimeRing, NonNativePowerOfTwo>,
+    pc: PhantomClient<PhantomPrimeOps>,
     tasks: HashMap<TaskId, TaskStatus>,
 }
 
@@ -106,7 +125,9 @@ impl SetupWallet {
         input: Vec<bool>,
     ) -> Result<TaskId, Error> {
         // Encrypt input
-        let cipher = self.pc.pk_encrypt_bit(input);
+        let cipher = self
+            .pc
+            .serialize_batched_ct(&self.pc.batched_pk_encrypt(input))?;
 
         // Create task on server
         let task_id = self
@@ -146,7 +167,9 @@ impl SetupWallet {
             TaskStatus::WaitingForInput => {
                 if !task.inputs.contains_key(&self.user_id) {
                     let input = self.get_input_for_task(task.id)?; // Implement this method
-                    let cipher = self.pc.pk_encrypt_bit(input);
+                    let cipher = self
+                        .pc
+                        .serialize_batched_ct(&self.pc.batched_pk_encrypt(input))?;
                     self.rc
                         .submit_task_input(task.id, self.user_id, cipher)
                         .await?;
@@ -169,7 +192,11 @@ impl SetupWallet {
         decryptable: Decryptable,
     ) -> Result<(), Error> {
         if decryptable.should_contribute(self.user_id) {
-            let share = self.pc.decrypt_share_bits(&decryptable.word);
+            let share = self.pc.serialize_rp_dec_share(
+                &self
+                    .pc
+                    .rp_decrypt_share(&self.pc.deserialize_rp_ct(&decryptable.word)?),
+            )?;
             self.rc
                 .submit_decryption_share(task_id, decryptable.id, self.user_id, share)
                 .await?;
@@ -189,18 +216,30 @@ impl SetupWallet {
         // You might want to decrypt the result here
         for decryptable in task.decryptables.iter() {
             let plain = match decryptable.vis {
-                Visibility::Public => self
-                    .pc
-                    .decrypt_bits(&decryptable.word, &decryptable.get_shares()),
+                Visibility::Public => self.pc.aggregate_rp_decryption_shares(
+                    &self.pc.deserialize_rp_ct(&decryptable.word).unwrap(),
+                    &decryptable
+                        .get_shares()
+                        .iter()
+                        .map(|share| self.pc.deserialize_rp_dec_share(share))
+                        .try_collect::<_, Vec<_>, _>()
+                        .unwrap(),
+                ),
                 Visibility::Designated(user_id) => {
                     debug_assert_eq!(user_id, self.user_id);
-                    let my_share = self.pc.decrypt_share_bits(&decryptable.word);
+                    let rp_ct = self.pc.deserialize_rp_ct(&decryptable.word).unwrap();
+                    let my_share = self.pc.rp_decrypt_share(&rp_ct);
                     let all_shares = {
-                        let mut other_shares = decryptable.get_shares();
+                        let mut other_shares = decryptable
+                            .get_shares()
+                            .iter()
+                            .map(|share| self.pc.deserialize_rp_dec_share(share))
+                            .try_collect::<_, Vec<_>, _>()
+                            .unwrap();
                         other_shares.push(my_share);
                         other_shares
                     };
-                    self.pc.decrypt_bits(&decryptable.word, &all_shares)
+                    self.pc.aggregate_rp_decryption_shares(&rp_ct, &all_shares)
                 }
             };
             println!("User {} Decrypted plain {:?}", self.user_id, plain);
@@ -302,10 +341,15 @@ impl ProductionClient {
         &self,
         user_id: UserId,
         pk_share: Vec<u8>,
+        rpk_share: Vec<u8>,
     ) -> Result<UserId, Error> {
         self.post_msgpack(
-            uri!(submit_pk_shares),
-            &PkShareSubmission { user_id, pk_share },
+            uri!(submit_pk_and_rpk_shares),
+            &PkShareSubmission {
+                user_id,
+                pk_share,
+                rpk_share,
+            },
         )
         .await
     }
