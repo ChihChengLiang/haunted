@@ -18,3 +18,8 @@ Optional Goals: It is desirable to have these features, but I'm not sure if I'm 
 - Serialize a struct of FheBools into a vector of FheBools and deserialize it back. This way we can remove the need to re-write the logic of re-encrypting struct memebers.
 - JavaScript support. [RiverRuby/pz-web](https://github.com/RiverRuby/pz-web/blob/main/src/ni_hiring.rs) is a good example to look into.
 
+## End-to-end test
+
+```bash
+cargo test --release --package haunted --lib -- test::e2e --nocapture
+```

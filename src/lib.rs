@@ -1,10 +1,11 @@
-mod client;
-mod server;
-mod types;
-mod phantom;
+pub mod circuit;
+pub mod client;
+pub mod phantom;
+pub mod server;
+pub mod user;
+pub mod worker;
 
-pub use client::Wallet;
-pub use server::rocket;
+pub use anyhow::{Error, Result};
 
 #[cfg(test)]
-mod tests;
+pub mod test;

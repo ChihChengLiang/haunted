@@ -1,483 +1,245 @@
 use crate::{
-    phantom::{PhantomClient, PhantomOps, PhantomPrimeOps},
-    server::*,
-    types::{
-        BskShareSubmission, Cipher, CreateTaskSubmission, Decryptable, DecryptionShareSubmission,
-        ParamCRS, PkShareSubmission, ServerState, Task, TaskId, TaskInputSubmission, TaskStatus,
-        UserId, Visibility,
+    phantom::{PhantomBsKeyShare, PhantomPackedCtDecShare, PhantomPkShare, PhantomRpKeyShare},
+    server::app::{
+        Action, CreateUserActionRequest, CreateUserActionResponse, CreateUserBsKeyShareRequest,
+        CreateUserBsKeyShareResponse, CreateUserPkShareRequest, CreateUserPkShareResponse,
+        CreateUserRpKeyShareRequest, CreateUserRpKeyShareResponse, GetPkResponse, GetSetupResponse,
+        GetStatusResponse, GetUserDecryptablesResponse, GetUserTasksResponse, Task,
+        UpdateUserTasksRequest, UserId,
     },
+    Result,
 };
-
-use anyhow::{bail, Error};
-use indicatif::{ProgressBar, ProgressStyle};
-use itertools::Itertools;
-use rand::{rngs::StdRng, Rng, SeedableRng};
-use reqwest::{self, header::CONTENT_TYPE, Client};
-use rocket::{serde::msgpack, uri};
-use serde::{Deserialize, Serialize};
-use std::{
-    collections::HashMap,
-    pin::Pin,
-    task::{Context, Poll},
-    time::Duration,
+use anyhow::{anyhow, bail};
+use axum::body::Body;
+use core::future::Future;
+use futures_util::TryFutureExt;
+use http_body_util::BodyExt;
+use hyper::{Request, Response, StatusCode};
+use hyper_util::{
+    client::legacy::{connect::HttpConnector, Client as HyperUtilClient},
+    rt::TokioExecutor,
 };
-use tokio::io::AsyncRead;
-use tokio::time::sleep;
-use tokio_util::io::ReaderStream;
+use serde::{de::DeserializeOwned, Serialize};
 
-pub struct Wallet {
-    pub(crate) rc: ProductionClient,
+pub trait HttpClient {
+    type Body: BodyExt<Error: std::error::Error>;
+
+    fn request(&self, req: Request<Body>) -> impl Future<Output = Result<Response<Self::Body>>>;
 }
 
-impl Wallet {
-    pub fn new(url: &str) -> Self {
-        Self {
-            rc: ProductionClient::new(url),
-        }
+impl HttpClient for HyperUtilClient<HttpConnector, Body> {
+    type Body = hyper::body::Incoming;
+
+    fn request(&self, req: Request<Body>) -> impl Future<Output = Result<Response<Self::Body>>> {
+        self.request(req)
+            .map_err(|err| anyhow!("failed to send request, {err}"))
     }
 }
 
-impl Wallet {
-    async fn wait_for_server_state(
+#[derive(Clone)]
+pub struct Client<T = HyperUtilClient<HttpConnector, Body>> {
+    uri: String,
+    inner: T,
+}
+
+impl Client {
+    pub fn new(uri: impl ToString) -> Self {
+        let uri = uri.to_string();
+        let inner = HyperUtilClient::builder(TokioExecutor::new()).build(HttpConnector::new());
+        Self { uri, inner }
+    }
+}
+
+impl<H: HttpClient> Client<H> {
+    async fn call<T: DeserializeOwned>(&self, request: Request<Body>) -> Result<T> {
+        let (method, uri) = (request.method().clone(), request.uri().clone());
+        tracing::debug!("send {method} {uri}");
+        let response = self.inner.request(request).await?;
+        let status = response.status();
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .map_err(|err| anyhow!("failed to collect body, {err}"))?;
+        if !matches!(status, StatusCode::OK) {
+            let bytes = body.to_bytes();
+            let msg = String::from_utf8_lossy(&bytes);
+            bail!("failed to {method} {uri}, {msg}",)
+        }
+        Ok(bincode::deserialize(&body.to_bytes())?)
+    }
+
+    async fn get<T: DeserializeOwned>(&self, path: impl AsRef<str>) -> Result<T> {
+        let uri = format!("{}{}", &self.uri, path.as_ref());
+        let request = Request::get(&uri).body(Body::empty()).unwrap();
+        self.call(request).await
+    }
+
+    async fn post<U: Serialize, T: DeserializeOwned>(
         &self,
-        desired_state: ServerState,
-    ) -> Result<ServerState, Error> {
-        const MAX_ATTEMPTS: u32 = 30;
-        const DELAY_MS: u64 = 1000;
-
-        for _ in 0..MAX_ATTEMPTS {
-            if let Ok(status) = self.rc.get_status().await {
-                if status == desired_state {
-                    return Ok(status);
-                }
-            }
-            sleep(Duration::from_millis(DELAY_MS)).await;
-        }
-        bail!("Timed out waiting for server state: {:?}", desired_state)
+        path: impl AsRef<str>,
+        body: &U,
+    ) -> Result<T> {
+        let uri = format!("{}{}", &self.uri, path.as_ref());
+        let body = bincode::serialize(body)?;
+        let request = Request::post(&uri).body(Body::from(body)).unwrap();
+        self.call(request).await
     }
 
-    async fn acquire_pk(
+    async fn put<U: Serialize, T: DeserializeOwned>(
+        &self,
+        path: impl AsRef<str>,
+        body: &U,
+    ) -> Result<T> {
+        let uri = format!("{}{}", &self.uri, path.as_ref());
+        let body = bincode::serialize(body)?;
+        let request = Request::put(&uri).body(Body::from(body)).unwrap();
+        self.call(request).await
+    }
+
+    pub async fn get_status(&self) -> Result<GetStatusResponse> {
+        self.get("/status").await
+    }
+
+    pub async fn get_setup(&self) -> Result<GetSetupResponse> {
+        self.get("/setup").await
+    }
+
+    pub async fn get_pk(&self) -> Result<GetPkResponse> {
+        self.get("/pk").await
+    }
+
+    pub async fn create_user_pk_share(
         &self,
         user_id: UserId,
-        pk_share: Vec<u8>,
-        rpk_share: Vec<u8>,
-    ) -> Result<Vec<u8>, Error> {
-        // Submit the public key share
-        let _: UserId = self
-            .rc
-            .submit_pk_shares(user_id, pk_share, rpk_share)
-            .await?;
-        for _ in 0..10 {
-            if let Ok(server_pk) = self.rc.get_aggregated_pk().await {
-                return Ok(server_pk);
-            }
-            sleep(Duration::from_millis(100)).await;
-        }
-        bail!("Failed to get aggregated public key".to_string());
+        pk_share: PhantomPkShare,
+    ) -> Result<CreateUserPkShareResponse> {
+        self.post(
+            format!("/users/{user_id}/pk_share"),
+            &CreateUserPkShareRequest { pk_share },
+        )
+        .await
     }
 
-    /// Complete the flow to derive server key shares
-    ///
-    /// Wait actions from other users
-    pub async fn run_setup(&self) -> Result<SetupWallet, Error> {
-        let (param, crs) = self.rc.get_param_crs().await?;
-        let user_id = self.rc.register().await?;
-        let seed = StdRng::from_entropy().gen();
-        let mut pc =
-            PhantomClient::<PhantomPrimeOps>::new(param, crs, user_id, seed, None).unwrap();
-        self.wait_for_server_state(ServerState::ReadyForPkShares)
-            .await?;
-        let server_pk = self
-            .acquire_pk(
-                user_id,
-                pc.serialize_pk_share(&pc.pk_share_gen())?,
-                pc.serialize_rp_key_share(&pc.rp_key_share_gen())?,
-            )
-            .await?;
-        pc.with_pk(pc.deserialize_pk(&server_pk)?);
-        self.wait_for_server_state(ServerState::ReadyForBskShares)
-            .await?;
-        self.rc
-            .submit_bsks(user_id, pc.serialize_bs_key_share(&pc.bs_key_share_gen())?)
-            .await?;
-
-        Ok(SetupWallet {
-            rc: self.rc.clone(),
-            user_id,
-            pc,
-            tasks: Default::default(),
-        })
-    }
-}
-
-pub struct SetupWallet {
-    rc: ProductionClient,
-    pub(crate) user_id: UserId,
-    pc: PhantomClient<PhantomPrimeOps>,
-    tasks: HashMap<TaskId, TaskStatus>,
-}
-
-impl SetupWallet {
-    /// Creates a new task on the server.
-    pub async fn create_task(
-        &mut self,
-        required_inputs: Vec<UserId>,
-        input: Vec<bool>,
-    ) -> Result<TaskId, Error> {
-        // Encrypt input
-        let cipher = self
-            .pc
-            .serialize_batched_ct(&self.pc.batched_pk_encrypt(input))?;
-
-        // Create task on server
-        let task_id = self
-            .rc
-            .create_task(self.user_id, required_inputs, cipher)
-            .await?;
-
-        // Store task locally
-        self.tasks.insert(task_id, TaskStatus::WaitingForInput);
-
-        Ok(task_id)
-    }
-
-    /// Runs background tasks for handling inputs and decryptables.
-    pub async fn run_background_tasks(&mut self) -> Result<(), Error> {
-        loop {
-            // Handle tasks (including input requests)
-            let tasks = self.rc.get_tasks_for_user(self.user_id).await?;
-            println!("User {} tasks {:?}", self.user_id, tasks);
-            for task in tasks {
-                self.handle_task(task).await?;
-            }
-
-            // Handle decryptable requests
-            let decryptables = self.rc.get_decryptables_for_user(self.user_id).await?;
-            for (task_id, decryptable) in decryptables {
-                self.handle_decryptable(task_id, decryptable).await?;
-            }
-
-            // Sleep for a short duration before the next iteration
-            sleep(Duration::from_secs(5)).await;
-        }
-    }
-
-    async fn handle_task(&mut self, task: Task) -> Result<(), Error> {
-        match task.status {
-            TaskStatus::WaitingForInput => {
-                if !task.inputs.contains_key(&self.user_id) {
-                    let input = self.get_input_for_task(task.id)?; // Implement this method
-                    let cipher = self
-                        .pc
-                        .serialize_batched_ct(&self.pc.batched_pk_encrypt(input))?;
-                    self.rc
-                        .submit_task_input(task.id, self.user_id, cipher)
-                        .await?;
-                }
-            }
-            TaskStatus::Done => {
-                self.process_completed_task(task);
-            }
-            _ => {
-                // Update local task status
-                self.tasks.insert(task.id, task.status);
-            }
-        }
-        Ok(())
-    }
-
-    async fn handle_decryptable(
-        &self,
-        task_id: TaskId,
-        decryptable: Decryptable,
-    ) -> Result<(), Error> {
-        if decryptable.should_contribute(self.user_id) {
-            let share = self.pc.serialize_rp_dec_share(
-                &self
-                    .pc
-                    .rp_decrypt_share(&self.pc.deserialize_rp_ct(&decryptable.word)?),
-            )?;
-            self.rc
-                .submit_decryption_share(task_id, decryptable.id, self.user_id, share)
-                .await?;
-        }
-        Ok(())
-    }
-
-    fn get_input_for_task(&self, _task_id: TaskId) -> Result<Vec<bool>, Error> {
-        // Implement logic to get input for the task
-        // This could involve user interaction or some predefined logic
-        Ok(vec![true, false]) // Example input
-    }
-
-    fn process_completed_task(&self, task: Task) {
-        // Implement logic to handle completed tasks
-        println!("Task {} completed", task.id);
-        // You might want to decrypt the result here
-        for decryptable in task.decryptables.iter() {
-            let plain = match decryptable.vis {
-                Visibility::Public => self.pc.aggregate_rp_decryption_shares(
-                    &self.pc.deserialize_rp_ct(&decryptable.word).unwrap(),
-                    &decryptable
-                        .get_shares()
-                        .iter()
-                        .map(|share| self.pc.deserialize_rp_dec_share(share))
-                        .try_collect::<_, Vec<_>, _>()
-                        .unwrap(),
-                ),
-                Visibility::Designated(user_id) => {
-                    debug_assert_eq!(user_id, self.user_id);
-                    let rp_ct = self.pc.deserialize_rp_ct(&decryptable.word).unwrap();
-                    let my_share = self.pc.rp_decrypt_share(&rp_ct);
-                    let all_shares = {
-                        let mut other_shares = decryptable
-                            .get_shares()
-                            .iter()
-                            .map(|share| self.pc.deserialize_rp_dec_share(share))
-                            .try_collect::<_, Vec<_>, _>()
-                            .unwrap();
-                        other_shares.push(my_share);
-                        other_shares
-                    };
-                    self.pc.aggregate_rp_decryption_shares(&rp_ct, &all_shares)
-                }
-            };
-            println!("User {} Decrypted plain {:?}", self.user_id, plain);
-        }
-    }
-    pub fn get_task(&self, task_id: &TaskId) -> Option<&TaskStatus> {
-        self.tasks.get(task_id)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct ProductionClient {
-    url: String,
-    client: reqwest::Client,
-}
-
-impl ProductionClient {
-    fn new(url: &str) -> Self {
-        Self {
-            url: url.to_string(),
-            client: Client::new(),
-        }
-    }
-
-    fn path(&self, path: impl ToString) -> String {
-        let path = path.to_string();
-        println!("{}", path);
-        format!("{}/{}", self.url, path)
-    }
-
-    async fn handle_response<T: Send + for<'de> Deserialize<'de> + 'static>(
-        response: reqwest::Response,
-    ) -> Result<T, Error> {
-        match response.status().as_u16() {
-            200 => Ok(response.json::<T>().await?),
-            _ => {
-                let err = response.text().await?;
-                bail!("Server responded error: {:?}", err)
-            }
-        }
-    }
-
-    async fn get<T: Send + for<'de> Deserialize<'de> + 'static>(
-        &self,
-        path: impl ToString,
-    ) -> Result<T, Error> {
-        let response = self.client.get(self.path(path)).send().await?;
-        Self::handle_response(response).await
-    }
-
-    async fn post_nobody<T: Send + for<'de> Deserialize<'de> + 'static>(
-        &self,
-        path: impl ToString,
-    ) -> Result<T, Error> {
-        let response = self.client.post(self.path(path)).send().await?;
-        Self::handle_response(response).await
-    }
-
-    async fn post<T: Send + for<'de> Deserialize<'de> + 'static>(
-        &self,
-        path: impl ToString,
-        body: Vec<u8>,
-    ) -> Result<T, Error> {
-        let response = self.client.post(self.path(path)).body(body).send().await?;
-        Self::handle_response(response).await
-    }
-    async fn post_msgpack<T: Send + for<'de> Deserialize<'de> + 'static>(
-        &self,
-        path: impl ToString,
-        body: &impl Serialize,
-    ) -> Result<T, Error> {
-        let body = msgpack::to_compact_vec(body)?;
-        let reader = ProgressReader::new(&body, 128 * 1024);
-        let stream = ReaderStream::new(reader);
-
-        let response = self
-            .client
-            .post(self.path(path))
-            .header(CONTENT_TYPE, "application/msgpack")
-            .body(reqwest::Body::wrap_stream(stream))
-            .send()
-            .await?;
-        Self::handle_response(response).await
-    }
-
-    pub async fn get_param_crs(&self) -> Result<ParamCRS, Error> {
-        self.get(uri!(get_param)).await
-    }
-
-    pub async fn register(&self) -> Result<UserId, Error> {
-        self.post_nobody(uri!(register)).await
-    }
-
-    pub async fn get_status(&self) -> Result<ServerState, Error> {
-        self.get(uri!(get_status)).await
-    }
-
-    pub async fn submit_pk_shares(
+    pub async fn create_user_rp_key_share(
         &self,
         user_id: UserId,
-        pk_share: Vec<u8>,
-        rpk_share: Vec<u8>,
-    ) -> Result<UserId, Error> {
-        self.post_msgpack(
-            uri!(submit_pk_and_rpk_shares),
-            &PkShareSubmission {
-                user_id,
-                pk_share,
-                rpk_share,
+        rp_key_share: PhantomRpKeyShare,
+    ) -> Result<CreateUserRpKeyShareResponse> {
+        self.post(
+            format!("/users/{user_id}/rp_key_share"),
+            &CreateUserRpKeyShareRequest { rp_key_share },
+        )
+        .await
+    }
+
+    pub async fn create_user_bs_key_share(
+        &self,
+        user_id: UserId,
+        bs_key_share: PhantomBsKeyShare,
+    ) -> Result<CreateUserBsKeyShareResponse> {
+        self.post(
+            format!("/users/{user_id}/bs_key_share"),
+            &CreateUserBsKeyShareRequest { bs_key_share },
+        )
+        .await
+    }
+
+    pub async fn get_user_decryptables(
+        &self,
+        user_id: UserId,
+    ) -> Result<GetUserDecryptablesResponse> {
+        self.get(format!("/users/{user_id}/decryptables")).await
+    }
+
+    pub async fn get_user_tasks(&self, user_id: UserId) -> Result<GetUserTasksResponse> {
+        self.get(format!("/users/{user_id}/tasks")).await
+    }
+
+    pub async fn create_decryption_share(
+        &self,
+        user_id: UserId,
+        dec_shares: Vec<(usize, PhantomPackedCtDecShare)>,
+    ) -> Result<()> {
+        self.put(
+            format!("/users/{user_id}/tasks"),
+            &UpdateUserTasksRequest {
+                tasks: dec_shares
+                    .into_iter()
+                    .map(|(decryptable_id, dec_share)| Task::CreateDecShare {
+                        decryptable_id,
+                        packed: None,
+                        dec_share: Some(dec_share),
+                    })
+                    .collect(),
             },
         )
         .await
     }
 
-    pub async fn get_aggregated_pk(&self) -> Result<Vec<u8>, Error> {
-        self.get(uri!(get_aggregated_pk)).await
-    }
-
-    pub async fn submit_bsks(&self, user_id: UserId, bsk_share: Vec<u8>) -> Result<UserId, Error> {
-        self.post_msgpack(
-            uri!(submit_bsks),
-            &BskShareSubmission { user_id, bsk_share },
-        )
-        .await
-    }
-
-    pub async fn create_task(
-        &self,
-        initiator: UserId,
-        required_inputs: Vec<UserId>,
-        initiator_input: Cipher,
-    ) -> Result<TaskId, Error> {
-        self.post_msgpack(
-            uri!(create_task),
-            &CreateTaskSubmission {
-                initiator,
-                required_inputs,
-                initiator_input,
-            },
-        )
-        .await
-    }
-
-    pub async fn get_tasks_for_user(&self, user_id: UserId) -> Result<Vec<Task>, Error> {
-        self.get(uri!(get_tasks_for_user(user_id))).await
-    }
-
-    pub async fn submit_task_input(
-        &self,
-        task_id: TaskId,
-        user_id: UserId,
-        input: Cipher,
-    ) -> Result<(), Error> {
-        self.post_msgpack(
-            uri!(submit_task_input),
-            &TaskInputSubmission {
-                task_id,
-                user_id,
-                input,
-            },
-        )
-        .await
-    }
-
-    pub async fn get_decryptables_for_user(
+    pub async fn create_user_actions(
         &self,
         user_id: UserId,
-    ) -> Result<Vec<(TaskId, Decryptable)>, Error> {
-        self.get(uri!(get_decryptables_for_user(user_id))).await
-    }
-
-    pub async fn submit_decryption_share(
-        &self,
-        task_id: TaskId,
-        decryptable_id: usize,
-        user_id: UserId,
-        share: Vec<u8>,
-    ) -> Result<(), Error> {
-        self.post_msgpack(
-            uri!(submit_decryption_share),
-            &DecryptionShareSubmission {
-                task_id,
-                decryptable_id,
-                user_id,
-                share,
-            },
+        action: Action,
+    ) -> Result<CreateUserActionResponse> {
+        self.post(
+            format!("/users/{user_id}/actions"),
+            &CreateUserActionRequest { action },
         )
         .await
     }
 }
 
-struct ProgressReader {
-    inner: Vec<u8>,
-    progress_bar: ProgressBar,
-    position: usize,
-    chunk_size: usize,
-}
+#[cfg(test)]
+pub(crate) mod test {
+    use crate::{
+        client::{Client, HttpClient},
+        server::{app, ServerState},
+        Result,
+    };
+    use axum::{body::Body, routing::RouterIntoService, Router};
+    use core::{future::Future, ops::DerefMut};
+    use hyper::{Request, Response};
+    use std::sync::{Arc, Mutex};
+    use tower::Service;
 
-impl ProgressReader {
-    fn new(body: &[u8], chunk_size: usize) -> Self {
-        let total_bytes = body.len() as u64;
-        println!("Total size {} B", total_bytes);
-        let bar = ProgressBar::new(total_bytes);
-        bar.set_style(
-            ProgressStyle::with_template(
-                "[{elapsed_precise}] {bar:40.cyan/blue} {percent}% {bytes_per_sec} {msg}",
-            )
-            .unwrap()
-            .progress_chars("##-"),
-        );
-        bar.set_message("Uploading...");
+    #[derive(Clone)]
+    pub(crate) struct MockHttpClient {
+        router: Arc<Mutex<RouterIntoService<Body>>>,
+    }
 
-        Self {
-            inner: body.to_vec(),
-            progress_bar: bar,
-            position: 0,
-            chunk_size,
+    impl MockHttpClient {
+        fn new(router: Router) -> Self {
+            MockHttpClient {
+                router: Arc::new(Mutex::new(router.into_service())),
+            }
         }
     }
-}
 
-impl AsyncRead for ProgressReader {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> Poll<tokio::io::Result<()>> {
-        let remaining = self.inner.len() - self.position;
-        let to_read = self.chunk_size.min(remaining.min(buf.remaining()));
-        let end = self.position + to_read;
-        buf.put_slice(&self.inner[self.position..end]);
-        self.position = end;
-        self.progress_bar.set_position(self.position as u64);
+    impl HttpClient for MockHttpClient {
+        type Body = Body;
 
-        if to_read == 0 {
-            self.progress_bar.finish_with_message("Upload complete")
+        fn request(
+            &self,
+            req: Request<Body>,
+        ) -> impl Future<Output = Result<Response<Self::Body>>> {
+            return inner(self.router.lock().unwrap(), req);
+
+            async fn inner(
+                mut router: impl DerefMut<Target = RouterIntoService<Body>>,
+                req: Request<Body>,
+            ) -> Result<Response<Body>> {
+                Ok(router.call(req).await.unwrap())
+            }
         }
+    }
 
-        Poll::Ready(Ok(()))
+    impl Client<MockHttpClient> {
+        pub(crate) fn mock(state: Arc<Mutex<ServerState>>) -> Self {
+            Self {
+                uri: "http://mock".to_string(),
+                inner: MockHttpClient::new(app::router().with_state(state)),
+            }
+        }
     }
 }
