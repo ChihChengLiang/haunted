@@ -13,8 +13,7 @@ http-body-util = "0.1.2"
 hyper = "1.4.1"
 hyper-util = { version = "0.1.9", features = ["client-legacy"] }
 itertools = { version = "0.13.0" }
-# phantom-zone-evaluator = { git = "https://github.com/han0110/phantom-zone", branch = "rewrite/ring-packing", features = ["serde"] }
-phantom-zone-evaluator = { path = "../phantom-zone/evaluator", features = ["serde"] }
+phantom-zone-evaluator = { git = "https://github.com/han0110/phantom-zone", branch = "rewrite/ring-packing", features = ["serde"] }
 rand = { version = "0.8.5" }
 serde = { version = "1.0" }
 tokio = { version = "1.0", features = ["rt-multi-thread", "signal"] }
@@ -25,8 +24,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1.11.0", features = ["v4", "serde"] }
 
 [dev-dependencies]
-# phantom-zone-evaluator = { git = "https://github.com/han0110/phantom-zone", branch = "rewrite/ring-packing", features = ["dev"] }
-phantom-zone-evaluator = { path = "../phantom-zone/evaluator", features = ["dev"] }
+phantom-zone-evaluator = { git = "https://github.com/han0110/phantom-zone", branch = "rewrite/ring-packing", features = ["dev"] }
 
 [[bin]]
 name = "server"
